@@ -117,14 +117,17 @@
   .qrbox svg{width:200px;height:200px;background:#fff;padding:8px;border-radius:6px;}
   .tagmeta{text-align:center;font-size:11px;}
 
-  .odchart{width:100%;height:230px;}
+  .odchart{width:100%;height:min(46vw,400px);min-height:260px;}
   .chart-grid{stroke:var(--hair);stroke-width:1;}
-  .chart-axis-label{font-size:9px;fill:var(--mut);font-family:"Segoe UI",Arial,sans-serif;}
+  .chart-axis-label{font-size:12px;fill:var(--mut);font-family:"Segoe UI",Arial,sans-serif;}
   .chart-band{fill:var(--blue);fill-opacity:.12;}
-  .chart-target-line{stroke:var(--blue);stroke-width:1;stroke-dasharray:4 3;opacity:.6;}
-  .chart-line{stroke:var(--blue);stroke-width:2;stroke-linejoin:round;stroke-linecap:round;}
-  .chart-dot{fill:var(--blue);stroke:var(--field);stroke-width:1.5;}
+  .chart-target-line{stroke:var(--blue);stroke-width:1.5;stroke-dasharray:5 4;opacity:.65;}
+  .chart-line{stroke:var(--blue);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;}
+  .chart-dot{fill:var(--blue);stroke:var(--field);stroke-width:2;}
   .chart-dot.bad{fill:var(--crit);}
+  .kpis.lg .kpi{padding:12px 14px;}
+  .kpis.lg .kpi span{font-size:26px;}
+  .kpis.lg .kpi b{font-size:9.5px;}
 
   /* ---------- TV board ---------- */
   body.tv-active header{display:none;}
@@ -219,9 +222,11 @@ var STATE = {
   readings: [], thicknessChecks: [], notes: [], photos: [], materialUsage: [],
   section: 'Baseline',
   dashTimer: null,
-  dashOpenCode: null,
   tvPage: 0,
-  tvPageTimer: null
+  tvPageTimer: null,
+  woDetailCode: null,
+  woDetailSection: null,
+  woDetailData: null
 };
 
 /* ============================= API ============================= */
@@ -321,7 +326,8 @@ function go(view, opts){
 }
 
 function render(){
-  qsa('nav button').forEach(function(b){ b.classList.toggle('active', b.dataset.nav === (STATE.view==='dashboard'?'dashboard':'home')); });
+  var dashLike = STATE.view === 'dashboard' || STATE.view === 'woDetail';
+  qsa('nav button').forEach(function(b){ b.classList.toggle('active', b.dataset.nav === (dashLike ? 'dashboard' : 'home')); });
   var app = E('app');
   if (STATE.view === 'home') app.innerHTML = viewHome();
   else if (STATE.view === 'controller') app.innerHTML = viewController(false);
@@ -329,6 +335,7 @@ function render(){
   else if (STATE.view === 'tagPrinted') app.innerHTML = viewTagPrinted();
   else if (STATE.view === 'operator') app.innerHTML = viewOperator();
   else if (STATE.view === 'dashboard') app.innerHTML = viewDashboard();
+  else if (STATE.view === 'woDetail') app.innerHTML = viewWoDetail();
   else if (STATE.view === 'tv') app.innerHTML = viewTV();
   bindView();
 }
@@ -1069,9 +1076,8 @@ function renderDashboard(d){
       '<h2>Active work orders ('+d.active.length+')</h2>' +
       (d.active.length ? '<table><thead><tr><th class="l">Code</th><th class="l">Customer</th><th>Baseline</th><th>Braidline</th><th>Coverline</th><th class="l">Last reading</th></tr></thead><tbody>'+rows+'</tbody></table>'
         : '<p class="muted">No active work orders.</p>') +
-      '<div class="muted" style="margin-top:8px;font-size:10px">Auto-refreshing every 20s &middot; server time '+fmtTime(d.serverTime)+'</div>' +
+      '<div class="muted" style="margin-top:8px;font-size:10px">Auto-refreshing every 20s &middot; server time '+fmtTime(d.serverTime)+' &middot; click a row for a bigger detail view</div>' +
     '</section>' +
-    '<div id="dashDetail"></div>' +
     '<section class="card"><h2>Recently completed</h2>' +
     (d.recentComplete.length ? '<table><thead><tr><th class="l">Code</th><th class="l">Customer</th><th class="l">Last updated</th></tr></thead><tbody>' +
       d.recentComplete.map(function(w){ return '<tr><td class="l">'+esc(w.code)+'</td><td class="l">'+esc(w.customer)+'</td><td class="l">'+fmtTime(w.lastUpdated)+'</td></tr>'; }).join('') +
@@ -1079,60 +1085,90 @@ function renderDashboard(d){
     '</section>';
 
   qsa('.dashRow', root).forEach(function(tr){
-    tr.addEventListener('click', function(){ openDashDetail(tr.dataset.code); });
+    tr.addEventListener('click', function(){ go('woDetail', {code: tr.dataset.code}); });
   });
-  if (STATE.dashOpenCode) openDashDetail(STATE.dashOpenCode);
 }
 
-function openDashDetail(code){
-  STATE.dashOpenCode = code;
-  var box = E('dashDetail');
-  box.innerHTML = '<section class="card"><p class="muted">Loading '+esc(code)+'&hellip;</p></section>';
+/* ---------- work order detail (bigger, per-section chart) ---------- */
+function viewWoDetail(){
+  return '<div id="woDetailRoot"><p class="muted">Loading '+esc(STATE.code)+'&hellip;</p></div>';
+}
+
+function bindWoDetail(){
+  loadWoDetail(STATE.code);
+  STATE.dashTimer = setInterval(function(){ loadWoDetail(STATE.code); }, 20000);
+}
+
+function loadWoDetail(code){
+  if (STATE.woDetailCode !== code){ STATE.woDetailSection = null; STATE.woDetailCode = code; }
   apiGet('getWorkOrder', {code: code}).then(function(data){
-    if (STATE.dashOpenCode !== code) return;
-    box.innerHTML = dashDetailHtml(data);
-  }).catch(function(err){ box.innerHTML = '<section class="card"><p class="flag">'+esc(err.message)+'</p></section>'; });
+    STATE.woDetailData = data;
+    if (!STATE.woDetailSection) STATE.woDetailSection = firstOpenSection(data.workOrder);
+    renderWoDetail();
+  }).catch(function(err){
+    var r = E('woDetailRoot');
+    if (r) r.innerHTML = '<section class="card"><p class="flag">'+esc(err.message)+'</p></section>';
+  });
 }
 
-function dashDetailHtml(data){
-  var wo = data.workOrder;
-  function odSeries(sec){ return data.readings.filter(function(r){ return r.Section===sec && r.Type==='OD'; }).sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); }); }
+function renderWoDetail(){
+  var root = E('woDetailRoot');
+  if (!root) return;
+  var data = STATE.woDetailData, wo = data.workOrder, sec = STATE.woDetailSection;
+  var prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
+
+  function odSeries(s){ return data.readings.filter(function(r){ return r.Section===s && r.Type==='OD'; }).sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); }); }
   function statsOf(vals){ if(!vals.length) return null; return {min:Math.min.apply(null,vals), max:Math.max.apply(null,vals), avg:round4(vals.reduce(function(a,b){return a+b;},0)/vals.length)}; }
-  function targetTol(prefix){
-    var t = wo[prefix+'_TargetOD'], tol = wo[prefix+'_ODTol'];
+  function targetTol(p){
+    var t = wo[p+'_TargetOD'], tol = wo[p+'_ODTol'];
     return (t!=='' && t!==undefined && tol!=='' && tol!==undefined) ? {target:Number(t), tol:Number(tol)} : null;
   }
 
-  var sections = [['Baseline','BL'], ['Braidline','BR'], ['Coverline','CV']];
-  var body = sections.map(function(pair){
-    var sec = pair[0], prefix = pair[1];
-    var series = odSeries(sec);
-    var vals = series.map(function(r){ return Number(r.Value); });
-    var s = statsOf(vals);
-    var tt = targetTol(prefix);
-    return '<div style="margin-bottom:20px">' +
-      '<h3>'+sec+'</h3>' +
-      (s ? '<div class="kpis"><div class="kpi"><b>OD readings</b><span>'+series.length+'</span></div>' +
+  var series = odSeries(sec);
+  var vals = series.map(function(r){ return Number(r.Value); });
+  var s = statsOf(vals);
+  var tt = targetTol(prefix);
+
+  root.innerHTML =
+    '<div class="row" style="margin-bottom:10px">' +
+      '<div><b style="font-size:20px">'+esc(wo.Code)+'</b> <span class="muted">'+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+' &middot; '+esc(wo.PipeSize||'')+'</span></div>' +
+      '<span class="spacer"></span>' +
+      '<button class="btn sm" id="wdOpenOpBtn">Open operator view</button>' +
+      '<button class="btn sm" id="wdEmailBtn">Email report now</button>' +
+      '<button class="btn sm" id="wdBackBtn">Back to dashboard</button>' +
+    '</div>' +
+    '<div class="tabs">' +
+      ['Baseline','Braidline','Coverline'].map(function(s2){
+        var st = wo[(s2==='Baseline'?'BL':s2==='Braidline'?'BR':'CV')+'_Status'];
+        return '<button data-detailsec="'+s2+'" class="'+(s2===sec?'active':'')+'">'+s2+' '+pillHtml(st)+'</button>';
+      }).join('') +
+    '</div>' +
+    '<section class="card">' +
+      (s ? '<div class="kpis lg"><div class="kpi"><b>OD readings</b><span>'+series.length+'</span></div>' +
         '<div class="kpi"><b>Min</b><span>'+s.min+'"</span></div><div class="kpi"><b>Max</b><span>'+s.max+'"</span></div>' +
         '<div class="kpi"><b>Avg</b><span>'+s.avg+'"</span></div></div>' +
-        (tt ? '<div class="muted" style="font-size:10px;margin-bottom:4px">Shaded band = target '+tt.target+'" &plusmn; '+tt.tol+'" tolerance</div>' : '') +
+        (tt ? '<div class="muted" style="font-size:11px;margin-bottom:8px">Shaded band = target '+tt.target+'" &plusmn; '+tt.tol+'" tolerance</div>' : '') +
         odChartSvg(series, tt)
-        : '<p class="muted">No OD readings yet.</p>') +
-    '</div>';
-  }).join('');
+        : '<p class="muted" style="padding:40px 0;text-align:center;font-size:14px">No OD readings yet for '+sec+'.</p>') +
+    '</section>';
 
-  return '<section class="card"><h2>'+esc(wo.Code)+' detail</h2>' +
-    '<div class="row"><span class="muted">'+esc(wo.Customer)+' &middot; '+esc(wo.ProductCode)+' &middot; '+esc(wo.PipeSize)+'</span>' +
-    '<span class="spacer"></span><button class="btn sm" id="openFromDashBtn">Open operator view</button>' +
-    '<button class="btn sm" id="emailFromDashBtn">Email report now</button>' +
-    '<button class="btn sm" id="closeDashDetailBtn">Close</button></div>' +
-    body +
-  '</section>';
+  E('wdBackBtn').addEventListener('click', function(){ go('dashboard'); });
+  E('wdOpenOpBtn').addEventListener('click', function(){ go('operator', {code: wo.Code, section: sec}); });
+  E('wdEmailBtn').addEventListener('click', function(){
+    E('wdEmailBtn').disabled = true;
+    apiPost('sendReport', {code: wo.Code, trigger: 'manual'})
+      .then(function(res){ toast('Report emailed to ' + res.sentTo); })
+      .catch(function(err){ toast(err.message, true); })
+      .then(function(){ E('wdEmailBtn').disabled = false; });
+  });
+  qsa('[data-detailsec]', root).forEach(function(b){
+    b.addEventListener('click', function(){ STATE.woDetailSection = b.dataset.detailsec; renderWoDetail(); });
+  });
 }
 
 function odChartSvg(series, tt){
-  if (series.length < 2) return '<p class="muted">Need at least 2 readings to chart a trend.</p>';
-  var W = 640, H = 230, padL = 52, padR = 14, padT = 12, padB = 28;
+  if (series.length < 2) return '<p class="muted" style="padding:40px 0;text-align:center;font-size:14px">Need at least 2 readings to chart a trend.</p>';
+  var W = 900, H = 320, padL = 62, padR = 18, padT = 16, padB = 34;
   var plotW = W - padL - padR, plotH = H - padT - padB;
 
   var vals = series.map(function(r){ return Number(r.Value); });
@@ -1177,7 +1213,7 @@ function odChartSvg(series, tt){
   var dots = series.map(function(r){
     var cx = xOf(new Date(r.Timestamp).getTime()).toFixed(1), cy = yOf(Number(r.Value)).toFixed(1);
     var cls = 'chart-dot' + (r.InTol === 'N' ? ' bad' : '');
-    return '<circle cx="'+cx+'" cy="'+cy+'" r="4" class="'+cls+'"><title>'+esc(r.Value)+'" &mdash; '+esc(fmtTime(r.Timestamp))+' ('+esc(r.Operator)+')</title></circle>';
+    return '<circle cx="'+cx+'" cy="'+cy+'" r="5.5" class="'+cls+'"><title>'+esc(r.Value)+'" &mdash; '+esc(fmtTime(r.Timestamp))+' ('+esc(r.Operator)+')</title></circle>';
   }).join('');
 
   return '<svg class="odchart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet">' +
@@ -1233,27 +1269,13 @@ function bindView(){
   else if (STATE.view === 'tagPrinted') bindTagPrinted();
   else if (STATE.view === 'operator') bindOperator();
   else if (STATE.view === 'dashboard') bindDashboard();
+  else if (STATE.view === 'woDetail') bindWoDetail();
   else if (STATE.view === 'tv') bindTV();
 }
 
 document.addEventListener('click', function(ev){
   var t = ev.target.closest('[data-nav]');
   if (t) go(t.dataset.nav);
-  var close = ev.target.closest('#closeDashDetailBtn');
-  if (close){ STATE.dashOpenCode = null; E('dashDetail').innerHTML=''; }
-  var openFromDash = ev.target.closest('#openFromDashBtn');
-  if (openFromDash){ var code = STATE.dashOpenCode; if (code) go('operator', {code: code, section:'Baseline'}); }
-  var emailFromDash = ev.target.closest('#emailFromDashBtn');
-  if (emailFromDash){
-    var dCode = STATE.dashOpenCode;
-    if (dCode){
-      emailFromDash.disabled = true;
-      apiPost('sendReport', {code: dCode, trigger: 'manual'})
-        .then(function(res){ toast('Report emailed to ' + res.sentTo); })
-        .catch(function(err){ toast(err.message, true); })
-        .then(function(){ emailFromDash.disabled = false; });
-    }
-  }
 });
 
 /* ============================= INIT ============================= */
