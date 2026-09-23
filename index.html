@@ -134,6 +134,9 @@
   .wo-header{cursor:pointer;}
   .wo-header:hover{color:var(--accent);}
 
+  .problemcard{border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin-bottom:8px;background:var(--band);}
+  .problemcard.open{border-color:var(--crit);border-width:2px;}
+
   .odchart{width:100%;height:min(46vw,400px);min-height:260px;}
   .chart-grid{stroke:var(--hair);stroke-width:1;}
   .chart-axis-label{font-size:12px;fill:var(--mut);font-family:"Segoe UI",Arial,sans-serif;}
@@ -142,6 +145,9 @@
   .chart-line{stroke:var(--blue);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;}
   .chart-dot{fill:var(--blue);stroke:var(--field);stroke-width:2;}
   .chart-dot.bad{fill:var(--crit);}
+  .chart-dev-label{font-size:11px;fill:var(--crit);font-weight:700;font-family:"Segoe UI",Arial,sans-serif;}
+  .chart-problem-line{stroke:var(--crit);stroke-width:1;stroke-dasharray:2 3;opacity:.55;}
+  .chart-problem-flag{font-size:15px;fill:var(--crit);}
 
   /* ---------- TV board ---------- */
   body.tv-active header{display:none;}
@@ -161,6 +167,8 @@
   .tv-code{font-size:clamp(20px,2.4vw,34px);font-weight:800;}
   .tv-pipecount{font-size:clamp(11px,1.1vw,15px);font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;
     background:var(--field);border:1px solid var(--line);border-radius:9px;padding:2px 9px;vertical-align:middle;}
+  .tv-issue{font-size:clamp(11px,1.1vw,15px);font-weight:700;color:#fff;background:var(--crit);
+    border-radius:9px;padding:2px 9px;vertical-align:middle;}
   .tv-customer{font-size:clamp(11px,1.2vw,16px);color:var(--mut);margin-top:2px;}
   .tv-lenbar{background:var(--hair);border-radius:5px;height:clamp(8px,.9vw,14px);overflow:hidden;margin-top:10px;}
   .tv-lenfill{height:100%;background:var(--blue);}
@@ -231,7 +239,7 @@ var STATE = {
   view: 'home',
   pipeCode: '', workOrderCode: '',
   pipe: null, workOrder: null, siblingPipes: [],
-  readings: [], thicknessChecks: [], notes: [], photos: [], materialUsage: [],
+  readings: [], thicknessChecks: [], notes: [], photos: [], materialUsage: [], problemReports: [],
   section: 'Baseline',
   dashTimer: null,
   tvPage: 0, tvPageTimer: null,
@@ -339,6 +347,7 @@ function applyPipeData(data){
   STATE.pipe = data.pipe; STATE.workOrder = data.workOrder; STATE.siblingPipes = data.siblingPipes || [];
   STATE.readings = data.readings; STATE.thicknessChecks = data.thicknessChecks;
   STATE.notes = data.notes; STATE.photos = data.photos; STATE.materialUsage = data.materialUsage || [];
+  STATE.problemReports = data.problemReports || [];
 }
 
 function reloadPipe(pipeCode){
@@ -684,22 +693,32 @@ function bindTagPrinted(){
 /* ============================= OPERATOR ============================= */
 function viewOperator(){
   var pipe = STATE.pipe, wo = STATE.workOrder, sec = STATE.section;
-  var prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
-  var status = pipe[prefix+'_Status'];
+  var openProblems = STATE.problemReports.filter(function(p){ return p.Status==='Open'; }).length;
 
-  return '' +
+  var header = '' +
   '<div class="row" style="margin-bottom:8px">' +
     '<div><b>'+esc(pipe.PipeCode)+'</b> <span class="muted">work order '+esc(pipe.WorkOrderCode)+' &middot; '+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+'</span></div>' +
     '<span class="spacer"></span>' +
+    (openProblems ? '<span class="pill" style="background:var(--crit)">'+openProblems+' open issue'+(openProblems===1?'':'s')+'</span>' : '') +
     '<button class="btn sm" id="emailNowBtn">Email report now</button>' +
     '<button class="btn sm" id="backHomeBtn">Home</button>' +
   '</div>' +
   '<div class="tabs">' +
+    '<button data-sec="Setup" class="'+(sec==='Setup'?'active':'')+'">Setup Reference</button>' +
     ['Baseline','Braidline','Coverline'].map(function(s){
       var st = pipe[(s==='Baseline'?'BL':s==='Braidline'?'BR':'CV')+'_Status'];
       return '<button data-sec="'+s+'" class="'+(s===sec?'active':'')+'">'+s+' '+pillHtml(st)+'</button>';
     }).join('') +
-  '</div>' +
+    '<button data-sec="Problems" class="'+(sec==='Problems'?'active':'')+'">Report Problem'+(openProblems?' <span class="pill" style="background:var(--crit)">'+openProblems+'</span>':'')+'</button>' +
+  '</div>';
+
+  if (sec === 'Setup') return header + setupReferenceHtml(wo);
+  if (sec === 'Problems') return header + problemReportTabHtml();
+
+  var prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
+  var status = pipe[prefix+'_Status'];
+
+  return header +
 
   '<section class="card">' +
     '<h2>Reference targets</h2>' +
@@ -748,6 +767,22 @@ function viewOperator(){
     '</div>' +
     '<div class="photolist" style="margin-top:8px">' + photosListHtml(sec) + '</div>' +
   '</section>';
+}
+
+function setupReferenceHtml(wo){
+  return '' +
+  '<section class="card">' +
+    '<h2>Work order</h2>' +
+    '<div class="grid g4">' +
+      '<div class="kpi"><b>Customer</b><span style="font-size:14px">'+fmtTol(wo.Customer)+'</span></div>' +
+      '<div class="kpi"><b>Product code</b><span style="font-size:14px">'+fmtTol(wo.ProductCode)+'</span></div>' +
+      '<div class="kpi"><b>Pipe size</b><span style="font-size:14px">'+fmtTol(wo.PipeSize)+'</span></div>' +
+      '<div class="kpi"><b>Project length</b><span>'+fmtTol(wo.ProjectLength)+'</span><i>ft total, across all pipes</i></div>' +
+    '</div>' +
+  '</section>' +
+  '<section class="card"><h2>Baseline reference</h2>' + referenceTargetsHtml(wo, 'Baseline') + '</section>' +
+  '<section class="card"><h2>Braidline reference</h2>' + referenceTargetsHtml(wo, 'Braidline') + '</section>' +
+  '<section class="card"><h2>Coverline reference</h2>' + referenceTargetsHtml(wo, 'Coverline') + '</section>';
 }
 
 function referenceTargetsHtml(wo, sec){
@@ -881,6 +916,97 @@ function materialTableHtml(rows){
     }).join('') + '</tbody></table>';
 }
 
+function problemReportTabHtml(){
+  var reports = STATE.problemReports.slice().sort(function(a,b){
+    if (a.Status !== b.Status) return a.Status === 'Open' ? -1 : 1;
+    return new Date(b.Timestamp) - new Date(a.Timestamp);
+  });
+  return '' +
+  '<section class="card">' +
+    '<h2>Report a problem</h2>' +
+    '<p class="muted" style="margin-top:0">Flag an issue with this pipe — it shows up on the Dashboard and TV view for the controller/supervisor until resolved.</p>' +
+    '<div class="grid g4">' +
+      '<div class="fld"><label>Section</label><select id="probSection"><option>General</option><option>Baseline</option><option>Braidline</option><option>Coverline</option></select></div>' +
+      '<div class="fld"><label>Footage marker (ft)</label><input id="probFootage" type="number" step="1" placeholder="where on the pipe"></div>' +
+      '<div class="fld"><label>Operator</label><input id="probOperator" value="'+esc(getOperatorName())+'"></div>' +
+      '<div class="fld"><label>Time</label><input id="probTime" type="datetime-local" value="'+nowLocalInputValue()+'"></div>' +
+    '</div>' +
+    '<div class="fld" style="margin-top:8px"><label>Description</label><textarea id="probDescription" placeholder="What happened, and where..."></textarea></div>' +
+    '<div class="fld" style="margin-top:8px"><label>Photos (optional, multiple allowed)</label><input id="probPhotos" type="file" accept="image/*" capture="environment" multiple></div>' +
+    '<div class="row" style="margin-top:8px"><button class="btn pri" id="submitProblemBtn">Submit problem report</button></div>' +
+  '</section>' +
+  '<section class="card">' +
+    '<h2>Reports on this pipe</h2>' +
+    (reports.length ? reports.map(problemReportCardHtml).join('') : '<p class="muted">No problems reported yet.</p>') +
+  '</section>';
+}
+
+function problemReportCardHtml(p){
+  var photos = STATE.photos.filter(function(ph){ return ph.ProblemReportId === p.RowId; });
+  var photosHtml = photos.length ? '<div class="photolist" style="margin-top:6px">' + photos.map(function(ph){
+    return '<a class="photoitem" href="'+esc(ph.DriveUrl)+'" target="_blank" rel="noopener"><img class="thumb" src="'+esc(ph.DriveUrl)+'" onerror="this.style.display=\'none\'"><span>photo</span></a>';
+  }).join('') + '</div>' : '';
+  var isOpen = p.Status === 'Open';
+  return '<div class="problemcard'+(isOpen?' open':'')+'">' +
+    '<div class="row">' +
+      '<span class="pill" style="background:'+(isOpen?'var(--crit)':'var(--good)')+'">'+esc(p.Status)+'</span>' +
+      '<b>'+esc(p.Section||'General')+'</b>' +
+      (p.FootageMarker!=='' ? '<span class="muted">footage '+esc(p.FootageMarker)+' ft</span>' : '') +
+      '<span class="spacer"></span>' +
+      '<span class="muted">'+esc(fmtTime(p.Timestamp))+' &middot; '+esc(p.Operator)+'</span>' +
+    '</div>' +
+    '<p style="margin:6px 0 0">'+esc(p.Description)+'</p>' +
+    photosHtml +
+    (isOpen ? '<div class="row" style="margin-top:8px"><button class="btn sm" data-resolve="'+esc(p.RowId)+'">Mark resolved</button></div>'
+      : '<div class="muted" style="margin-top:6px;font-size:11px">Resolved '+esc(fmtTime(p.ResolvedAt))+' by '+esc(p.ResolvedBy)+(p.ResolutionNotes?': '+esc(p.ResolutionNotes):'')+'</div>') +
+  '</div>';
+}
+
+function bindProblemReportTab(){
+  E('submitProblemBtn').addEventListener('click', function(){
+    var operator = E('probOperator').value.trim();
+    if (!operator){ toast('Operator name is required', true); return; }
+    setOperatorName(operator);
+    var description = E('probDescription').value.trim();
+    if (!description){ toast('Enter a description', true); return; }
+    var section = E('probSection').value;
+    var footage = E('probFootage').value;
+    var ts = new Date(E('probTime').value).toISOString();
+    var files = Array.prototype.slice.call(E('probPhotos').files || []);
+    E('submitProblemBtn').disabled = true;
+
+    var readFile = function(file){
+      return new Promise(function(resolve){
+        var reader = new FileReader();
+        reader.onload = function(){ resolve({imageBase64: reader.result, filename: file.name, mimeType: file.type || 'image/jpeg'}); };
+        reader.readAsDataURL(file);
+      });
+    };
+
+    Promise.all(files.map(readFile)).then(function(photos){
+      return apiPost('addProblemReport', {
+        pipeCode: STATE.pipeCode, section: section, footageMarker: footage, description: description,
+        operator: operator, timestamp: ts, photos: photos
+      });
+    }).then(function(){ toast('Problem reported'); return reloadPipe(STATE.pipeCode); })
+      .then(function(){ render(); })
+      .catch(function(err){ toast(err.message, true); E('submitProblemBtn').disabled = false; });
+  });
+
+  qsa('[data-resolve]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var reportId = btn.dataset.resolve;
+      var notes = prompt('Resolution notes (optional):', '');
+      if (notes === null) return;
+      btn.disabled = true;
+      apiPost('resolveProblemReport', {reportId: reportId, resolvedBy: getOperatorName() || 'Unknown', resolutionNotes: notes})
+        .then(function(){ toast('Marked resolved'); return reloadPipe(STATE.pipeCode); })
+        .then(function(){ render(); })
+        .catch(function(err){ toast(err.message, true); btn.disabled = false; });
+    });
+  });
+}
+
 function notesListHtml(sec){
   var notes = STATE.notes.filter(function(n){ return n.Section===sec; }).sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
   if (!notes.length) return '<p class="muted">No notes yet.</p>';
@@ -923,6 +1049,9 @@ function bindOperator(){
       .catch(function(err){ toast(err.message, true); })
       .then(function(){ E('emailNowBtn').disabled = false; });
   });
+
+  if (sec === 'Setup') return;
+  if (sec === 'Problems') { bindProblemReportTab(); return; }
 
   var showBtn = E('showCompleteBtn');
   if (showBtn) showBtn.addEventListener('click', function(){ E('completeForm').style.display = 'flex'; showBtn.parentElement.style.display = 'none'; });
@@ -1056,6 +1185,10 @@ function lengthProgressHtml(g){
     '<div class="lenbar"><div class="lenfill" style="width:'+pct+'%"></div></div>';
 }
 
+function problemBadge(count){
+  return count ? '<span class="pill" style="background:var(--crit)">&#9888; '+count+' issue'+(count===1?'':'s')+'</span>' : '';
+}
+
 function workOrderGroupHtml(g){
   var pipeRows = g.pipes.map(function(p){
     var lr = p.lastReading;
@@ -1063,7 +1196,7 @@ function workOrderGroupHtml(g){
       (lr.InTol==='Y' ? '<span class="dot good"></span>' : lr.InTol==='N' ? '<span class="dot bad"></span>' : '')) : '<span class="muted">none</span>';
     var stale = lr && (Date.now()-new Date(lr.Timestamp).getTime()) > 75*60000 && p.overallStatus!=='Complete';
     return '<tr class="pipeRow" data-pipe="'+esc(p.pipeCode)+'" style="cursor:pointer">' +
-      '<td class="l">'+esc(p.pipeCode)+'</td>' +
+      '<td class="l">'+esc(p.pipeCode)+' '+problemBadge(p.openProblems)+'</td>' +
       '<td>'+pillHtml(p.blStatus)+'</td><td>'+pillHtml(p.brStatus)+'</td><td>'+pillHtml(p.cvStatus)+'</td>' +
       '<td class="l">'+lrHtml+(stale?' <span class="flag">STALE</span>':'')+'</td>' +
     '</tr>';
@@ -1071,6 +1204,7 @@ function workOrderGroupHtml(g){
   return '<section class="card">' +
     '<div class="row"><h2 class="wo-header" data-wodash="'+esc(g.workOrderCode)+'" style="border:none;margin:0;padding:0">'+esc(g.workOrderCode)+'</h2>' +
     '<span class="pill inprogress">'+g.pipes.length+' pipe'+(g.pipes.length===1?'':'s')+'</span>' +
+    problemBadge(g.openProblems) +
     '<span class="muted">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</span></div>' +
     lengthProgressHtml(g) +
     '<table style="margin-top:6px"><thead><tr><th class="l">Pipe</th><th>Baseline</th><th>Braidline</th><th>Coverline</th><th class="l">Last reading</th></tr></thead><tbody>' + pipeRows + '</tbody></table>' +
@@ -1148,15 +1282,28 @@ function renderPipeDetail(){
   var s = statsOf(vals);
   var tt = targetTol(prefix);
   var targetLen = wo[prefix+'_TargetLength'], actualLen = pipe[prefix+'_ActualLength'];
+  var chartProblems = (data.problemReports || []).filter(function(p){ return p.Section === sec; });
+  var openProblems = (data.problemReports || []).filter(function(p){ return p.Status === 'Open'; });
 
   root.innerHTML =
     '<div class="row" style="margin-bottom:10px">' +
       '<div><b style="font-size:20px">'+esc(pipe.PipeCode)+'</b> <span class="muted">work order '+esc(pipe.WorkOrderCode)+' &middot; '+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+'</span></div>' +
       '<span class="spacer"></span>' +
+      (openProblems.length ? problemBadge(openProblems.length) : '') +
       '<button class="btn sm" id="pdOpenOpBtn">Open operator view</button>' +
       '<button class="btn sm" id="pdEmailBtn">Email report now</button>' +
       '<button class="btn sm" id="pdBackBtn">Back to work order</button>' +
     '</div>' +
+    (openProblems.length ? '<section class="card" style="border-color:var(--crit)">' +
+      '<h2>Open problem reports</h2>' +
+      openProblems.map(function(p){
+        return '<div class="problemcard open"><div class="row"><b>'+esc(p.Section||'General')+'</b>' +
+          (p.FootageMarker!=='' ? '<span class="muted">footage '+esc(p.FootageMarker)+' ft</span>' : '') +
+          '<span class="spacer"></span><span class="muted">'+esc(fmtTime(p.Timestamp))+' &middot; '+esc(p.Operator)+'</span></div>' +
+          '<p style="margin:6px 0 0">'+esc(p.Description)+'</p></div>';
+      }).join('') +
+      '<div class="row" style="margin-top:4px"><button class="btn sm" id="pdManageProblemsBtn">Manage / resolve</button></div>' +
+    '</section>' : '') +
     '<div class="tabs">' +
       ['Baseline','Braidline','Coverline'].map(function(s2){
         var st = pipe[(s2==='Baseline'?'BL':s2==='Braidline'?'BR':'CV')+'_Status'];
@@ -1167,13 +1314,15 @@ function renderPipeDetail(){
       (s ? '<div class="kpis lg"><div class="kpi"><b>OD readings</b><span>'+series.length+'</span></div>' +
         '<div class="kpi"><b>Min</b><span>'+s.min+'"</span></div><div class="kpi"><b>Max</b><span>'+s.max+'"</span></div>' +
         '<div class="kpi"><b>Avg</b><span>'+s.avg+'"</span></div></div>' +
-        (tt ? '<div class="muted" style="font-size:11px;margin-bottom:8px">Shaded band = target '+tt.target+'" &plusmn; '+tt.tol+'" tolerance</div>' : '') +
-        odChartSvg(series, tt)
+        (tt ? '<div class="muted" style="font-size:11px;margin-bottom:8px">Shaded band = target '+tt.target+'" &plusmn; '+tt.tol+'" tolerance &middot; red labels show deviation, &#9888; marks a reported problem</div>' : '') +
+        odChartSvg(series, tt, chartProblems)
         : '<p class="muted" style="padding:40px 0;text-align:center;font-size:14px">No OD readings yet for '+sec+'.</p>') +
       (targetLen!=='' || actualLen!=='' ? '<div class="muted" style="margin-top:10px;font-size:11px">Length — target '+fmtTol(targetLen)+' ft &middot; actual '+fmtTol(actualLen)+' ft</div>' : '') +
     '</section>';
 
   E('pdBackBtn').addEventListener('click', function(){ go('woDashboard', {workOrderCode: pipe.WorkOrderCode}); });
+  var mgBtn = E('pdManageProblemsBtn');
+  if (mgBtn) mgBtn.addEventListener('click', function(){ go('operator', {pipeCode: pipe.PipeCode, section: 'Problems'}); });
   E('pdOpenOpBtn').addEventListener('click', function(){ go('operator', {pipeCode: pipe.PipeCode, section: sec}); });
   E('pdEmailBtn').addEventListener('click', function(){
     E('pdEmailBtn').disabled = true;
@@ -1187,7 +1336,8 @@ function renderPipeDetail(){
   });
 }
 
-function odChartSvg(series, tt){
+function odChartSvg(series, tt, problems){
+  problems = problems || [];
   if (series.length < 2) return '<p class="muted" style="padding:40px 0;text-align:center;font-size:14px">Need at least 2 readings to chart a trend.</p>';
   var W = 900, H = 320, padL = 62, padR = 18, padT = 16, padB = 34;
   var plotW = W - padL - padR, plotH = H - padT - padB;
@@ -1232,15 +1382,33 @@ function odChartSvg(series, tt){
 
   var pts = series.map(function(r){ return xOf(new Date(r.Timestamp).getTime()).toFixed(1) + ',' + yOf(Number(r.Value)).toFixed(1); }).join(' ');
   var dots = series.map(function(r){
-    var cx = xOf(new Date(r.Timestamp).getTime()).toFixed(1), cy = yOf(Number(r.Value)).toFixed(1);
-    var cls = 'chart-dot' + (r.InTol === 'N' ? ' bad' : '');
-    return '<circle cx="'+cx+'" cy="'+cy+'" r="5.5" class="'+cls+'"><title>'+esc(r.Value)+'" &mdash; '+esc(fmtTime(r.Timestamp))+' ('+esc(r.Operator)+')</title></circle>';
+    var val = Number(r.Value);
+    var cx = xOf(new Date(r.Timestamp).getTime()).toFixed(1), cy = yOf(val).toFixed(1);
+    var bad = r.InTol === 'N';
+    var cls = 'chart-dot' + (bad ? ' bad' : '');
+    var devLabel = '';
+    if (bad && tt){
+      var dev = val - tt.target;
+      var devText = (dev >= 0 ? '+' : '') + dev.toFixed(3) + '"';
+      var labelY = (val >= tt.target) ? (Number(cy) - 10) : (Number(cy) + 17);
+      devLabel = '<text x="'+cx+'" y="'+labelY.toFixed(1)+'" text-anchor="middle" class="chart-dev-label">'+devText+'</text>';
+    }
+    return '<circle cx="'+cx+'" cy="'+cy+'" r="5.5" class="'+cls+'"><title>'+esc(r.Value)+'" &mdash; '+esc(fmtTime(r.Timestamp))+' ('+esc(r.Operator)+')</title></circle>' + devLabel;
+  }).join('');
+
+  var problemMarkers = problems.map(function(p){
+    var t = new Date(p.Timestamp).getTime();
+    if (isNaN(t) || t < tMin || t > tMax) return '';
+    var x = xOf(t).toFixed(1);
+    var label = (p.FootageMarker !== '' && p.FootageMarker !== undefined ? p.FootageMarker + ' ft — ' : '') + p.Description;
+    return '<line x1="'+x+'" y1="'+padT+'" x2="'+x+'" y2="'+(H-padB)+'" class="chart-problem-line"/>' +
+      '<text x="'+x+'" y="'+(padT-3)+'" text-anchor="middle" class="chart-problem-flag">&#9888;<title>'+esc(label)+'</title></text>';
   }).join('');
 
   return '<svg class="odchart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet">' +
     gridLines + band +
     '<polyline points="'+pts+'" fill="none" class="chart-line"/>' +
-    dots + yLabels + xTicks +
+    dots + problemMarkers + yLabels + xTicks +
   '</svg>';
 }
 
@@ -1290,6 +1458,7 @@ function renderWoDashboard(g, serverTime){
       : '<span class="muted">no readings yet</span>';
     return '<div class="pipecard" data-pipe="'+esc(p.pipeCode)+'">' +
       '<div class="pipecard-head"><b>'+esc(p.pipeCode)+'</b>'+pillHtml(p.overallStatus)+'</div>' +
+      (p.openProblems ? '<div style="margin-bottom:6px">'+problemBadge(p.openProblems)+'</div>' : '') +
       '<div class="pipecard-stages">'+pillHtml(p.blStatus)+pillHtml(p.brStatus)+pillHtml(p.cvStatus)+'</div>' +
       '<div class="pipecard-reading">'+lrHtml+(stale?' <span class="flag">STALE</span>':'')+'</div>' +
     '</div>';
@@ -1299,6 +1468,7 @@ function renderWoDashboard(g, serverTime){
     '<div class="row" style="margin-bottom:10px">' +
       '<div><b style="font-size:20px">'+esc(g.workOrderCode)+'</b> ' +
       '<span class="pill inprogress">'+g.pipes.length+' pipe'+(g.pipes.length===1?'':'s')+'</span> ' +
+      problemBadge(g.openProblems) + ' ' +
       '<span class="muted">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</span></div>' +
       '<span class="spacer"></span>' +
       '<button class="btn sm" id="wodAddPipeBtn">+ Add pipe</button>' +
@@ -1417,15 +1587,16 @@ function tvCardHtml(g){
     var stale = lr && (Date.now() - new Date(lr.Timestamp).getTime()) > 75*60000;
     var valueClass = lr ? (lr.InTol==='Y' ? 'good' : lr.InTol==='N' ? 'bad' : '') : '';
     var curSection = p.cvStatus==='In progress' ? 'Coverline' : p.brStatus==='In progress' ? 'Braidline' : p.blStatus==='In progress' ? 'Baseline' : 'Not started';
-    return '<div class="tv-pipe'+(stale?' stale':'')+'">' +
-      '<div class="tv-pipe-code">'+esc(p.pipeCode)+'</div>' +
+    return '<div class="tv-pipe'+(stale||p.openProblems?' stale':'')+'">' +
+      '<div class="tv-pipe-code">'+esc(p.pipeCode)+(p.openProblems?' <span class="tv-issue">&#9888; '+p.openProblems+'</span>':'')+'</div>' +
       '<div class="tv-pipe-sec">'+esc(curSection)+(stale?' &middot; STALE':'')+'</div>' +
       (lr ? '<div class="tv-pipe-val '+valueClass+'">'+esc(lr.Value)+'"</div>' : '<div class="tv-pipe-val muted">&mdash;</div>') +
     '</div>';
   }).join('');
 
   return '<div class="tv-card">' +
-    '<div class="tv-code">'+esc(g.workOrderCode)+' <span class="tv-pipecount">'+g.pipes.length+' pipe'+(g.pipes.length===1?'':'s')+'</span></div>' +
+    '<div class="tv-code">'+esc(g.workOrderCode)+' <span class="tv-pipecount">'+g.pipes.length+' pipe'+(g.pipes.length===1?'':'s')+'</span>' +
+    (g.openProblems ? ' <span class="tv-issue">&#9888; '+g.openProblems+'</span>' : '') + '</div>' +
     '<div class="tv-customer">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</div>' +
     (pct!==null ? '<div class="tv-lenbar"><div class="tv-lenfill" style="width:'+pct+'%"></div></div>' +
       '<div class="tv-lenlabel">'+g.producedLength+' / '+g.projectLength+' ft ('+pct+'%)</div>' : '') +
