@@ -41,7 +41,7 @@
   #status{font-size:9.5px;padding:2px 8px;border-radius:9px;white-space:nowrap;}
   #status.ok{color:var(--good);}
   #status.bad{color:var(--crit);}
-  main{max-width:920px;margin:0 auto;padding:14px 16px 60px;}
+  main{max-width:960px;margin:0 auto;padding:14px 16px 60px;}
 
   section.card{border:1px solid var(--line);border-radius:5px;padding:12px 14px;margin-bottom:14px;background:var(--field);}
   .grid{display:grid;gap:8px 12px;}
@@ -83,6 +83,9 @@
   .kpi b{display:block;font-size:8px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;}
   .kpi span{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums;display:block;}
   .kpi i{font-style:normal;font-size:8.5px;color:var(--mut);}
+  .kpis.lg .kpi{padding:12px 14px;}
+  .kpis.lg .kpi span{font-size:26px;}
+  .kpis.lg .kpi b{font-size:9.5px;}
 
   .pill{display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;
     letter-spacing:.04em;padding:2px 7px;border-radius:9px;color:#fff;}
@@ -117,6 +120,10 @@
   .qrbox svg{width:200px;height:200px;background:#fff;padding:8px;border-radius:6px;}
   .tagmeta{text-align:center;font-size:11px;}
 
+  .lenbar{background:var(--hair);border-radius:4px;height:8px;overflow:hidden;margin-bottom:4px;}
+  .lenfill{height:100%;background:var(--blue);}
+  .lenlabel{font-size:10px;color:var(--mut);margin-bottom:8px;}
+
   .odchart{width:100%;height:min(46vw,400px);min-height:260px;}
   .chart-grid{stroke:var(--hair);stroke-width:1;}
   .chart-axis-label{font-size:12px;fill:var(--mut);font-family:"Segoe UI",Arial,sans-serif;}
@@ -125,9 +132,6 @@
   .chart-line{stroke:var(--blue);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;}
   .chart-dot{fill:var(--blue);stroke:var(--field);stroke-width:2;}
   .chart-dot.bad{fill:var(--crit);}
-  .kpis.lg .kpi{padding:12px 14px;}
-  .kpis.lg .kpi span{font-size:26px;}
-  .kpis.lg .kpi b{font-size:9.5px;}
 
   /* ---------- TV board ---------- */
   body.tv-active header{display:none;}
@@ -141,27 +145,23 @@
   .tv-sub{font-size:clamp(11px,1.1vw,16px);color:var(--mut);margin-top:3px;}
   .tv-clock{font-size:clamp(24px,3.2vw,50px);font-weight:700;font-variant-numeric:tabular-nums;}
   .tv-empty{font-size:clamp(20px,3vw,40px);color:var(--mut);text-align:center;padding:clamp(60px,12vw,160px) 20px;}
-  .tv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:clamp(14px,1.8vw,26px);}
+  .tv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:clamp(14px,1.8vw,26px);}
   .tv-card{border:1px solid var(--line);border-radius:14px;background:var(--band);
     padding:clamp(16px,2vw,26px);position:relative;overflow:hidden;}
-  .tv-card.stale{border-color:var(--crit);border-width:2px;}
-  .tv-stale-badge{position:absolute;top:14px;right:14px;background:var(--crit);color:#fff;
-    font-size:clamp(9px,.9vw,12px);font-weight:800;padding:3px 9px;border-radius:9px;text-transform:uppercase;letter-spacing:.05em;}
   .tv-code{font-size:clamp(20px,2.4vw,34px);font-weight:800;}
   .tv-customer{font-size:clamp(11px,1.2vw,16px);color:var(--mut);margin-top:2px;}
-  .tv-pipeline{display:flex;align-items:center;gap:6px;margin:clamp(12px,1.6vw,20px) 0;}
-  .tv-stage{flex:1;text-align:center;padding:clamp(6px,.8vw,10px) 4px;border-radius:6px;
-    font-size:clamp(10px,1vw,14px);font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#fff;}
-  .tv-stage.pending{background:var(--mut);opacity:.45;}
-  .tv-stage.active{background:var(--blue);}
-  .tv-stage.complete{background:var(--good);}
-  .tv-arrow{color:var(--mut);font-size:clamp(12px,1.4vw,20px);}
-  .tv-reading{display:flex;align-items:baseline;gap:10px;margin-top:4px;}
-  .tv-value{font-size:clamp(32px,4.6vw,60px);font-weight:800;font-variant-numeric:tabular-nums;color:var(--ink);}
-  .tv-value.good{color:var(--good);}
-  .tv-value.bad{color:var(--crit);}
-  .tv-unit{font-size:clamp(12px,1.3vw,18px);color:var(--mut);font-weight:600;margin-left:4px;}
-  .tv-meta{font-size:clamp(10px,1vw,14px);color:var(--mut);margin-top:2px;}
+  .tv-lenbar{background:var(--hair);border-radius:5px;height:clamp(8px,.9vw,14px);overflow:hidden;margin-top:10px;}
+  .tv-lenfill{height:100%;background:var(--blue);}
+  .tv-lenlabel{font-size:clamp(10px,1vw,14px);color:var(--mut);margin-top:4px;}
+  .tv-pipelist{display:flex;flex-direction:column;gap:8px;margin-top:clamp(12px,1.6vw,18px);}
+  .tv-pipe{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:8px;
+    padding:clamp(7px,.9vw,12px) clamp(10px,1.2vw,14px);background:var(--field);}
+  .tv-pipe.stale{border-color:var(--crit);border-width:2px;}
+  .tv-pipe-code{font-size:clamp(13px,1.4vw,19px);font-weight:700;min-width:64px;}
+  .tv-pipe-sec{flex:1;font-size:clamp(10px,1.05vw,14px);color:var(--mut);text-transform:uppercase;letter-spacing:.03em;font-weight:600;}
+  .tv-pipe-val{font-size:clamp(16px,1.9vw,26px);font-weight:800;font-variant-numeric:tabular-nums;}
+  .tv-pipe-val.good{color:var(--good);}
+  .tv-pipe-val.bad{color:var(--crit);}
   .tv-dots{display:flex;justify-content:center;gap:9px;margin-top:clamp(16px,2.4vw,30px);}
   .tv-dot{width:10px;height:10px;border-radius:50%;background:var(--line);}
   .tv-dot.active{background:var(--accent);}
@@ -207,8 +207,8 @@
 <script>
 /* ============================= CONFIG ============================= */
 // Paste your deployed Apps Script Web App URL here (ends in /exec).
-// Can also be set per-browser from the gear-less Settings row on Home for testing.
-var DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbxGOH5Ffoevl2LEawp6phYQS3S77C-57aWqyoyViidVgRs_DPvrWbZds1_OW2DZcEI7eQ/exec';
+// Can also be set per-browser from the Settings row on Home for testing.
+var DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbz2HsHOh07yVRD6WJoDIPfHlWxysj4Scwr42g1WTgmshCs8r_qr1raS7o5i-cgTZG_-Jg/exec';
 var API_URL = localStorage.getItem('srtp_api_url') || DEFAULT_API_URL;
 
 var BASELINE_POINTS = 16;
@@ -217,16 +217,13 @@ var COVERLINE_POINTS = 12;
 /* ============================= STATE ============================= */
 var STATE = {
   view: 'home',
-  code: '',
-  workOrder: null,
+  pipeCode: '', workOrderCode: '',
+  pipe: null, workOrder: null, siblingPipes: [],
   readings: [], thicknessChecks: [], notes: [], photos: [], materialUsage: [],
   section: 'Baseline',
   dashTimer: null,
-  tvPage: 0,
-  tvPageTimer: null,
-  woDetailCode: null,
-  woDetailSection: null,
-  woDetailData: null
+  tvPage: 0, tvPageTimer: null,
+  pdCode: null, pdSection: null, pdData: null
 };
 
 /* ============================= API ============================= */
@@ -288,6 +285,7 @@ function fmtRel(iso){
 }
 function num(v){ var n = parseFloat(v); return isFinite(n) ? n : null; }
 function round4(n){ return Math.round(n*10000)/10000; }
+function fmtTol(v){ return (v===''||v===undefined||v===null) ? '—' : v; }
 function toast(msg, isErr){
   var t = E('toast');
   if (!t){ t = document.createElement('div'); t.id='toast';
@@ -305,7 +303,6 @@ function toast(msg, isErr){
 function getOperatorName(){ return localStorage.getItem('srtp_operator_name') || ''; }
 function setOperatorName(v){ localStorage.setItem('srtp_operator_name', v || ''); }
 
-/* clock / angle labels */
 function pointLabel(section, i){
   if (section === 'Coverline'){
     var clock = [12,1,2,3,4,5,6,7,8,9,10,11];
@@ -315,40 +312,64 @@ function pointLabel(section, i){
 }
 function pointCount(section){ return section === 'Coverline' ? COVERLINE_POINTS : BASELINE_POINTS; }
 
+function pillHtml(status){
+  var cls = status==='Complete' ? 'complete' : status==='In progress' ? 'inprogress' : 'notstarted';
+  return '<span class="pill '+cls+'">'+esc(status||'Not started')+'</span>';
+}
+
+function firstOpenSection(pipe){
+  if (pipe.BL_Status !== 'Complete') return 'Baseline';
+  if (pipe.BR_Status !== 'Complete') return 'Braidline';
+  return 'Coverline';
+}
+
+function applyPipeData(data){
+  STATE.pipe = data.pipe; STATE.workOrder = data.workOrder; STATE.siblingPipes = data.siblingPipes || [];
+  STATE.readings = data.readings; STATE.thicknessChecks = data.thicknessChecks;
+  STATE.notes = data.notes; STATE.photos = data.photos; STATE.materialUsage = data.materialUsage || [];
+}
+
+function reloadPipe(pipeCode){
+  return apiGet('getPipe', {pipeCode: pipeCode}).then(function(data){ applyPipeData(data); });
+}
+
 /* ============================= NAV / RENDER ============================= */
 function go(view, opts){
   leaveTVIfActive();
   STATE.view = view;
-  if (opts && opts.code !== undefined) STATE.code = opts.code;
+  if (opts && opts.pipeCode !== undefined) STATE.pipeCode = opts.pipeCode;
+  if (opts && opts.workOrderCode !== undefined) STATE.workOrderCode = opts.workOrderCode;
   if (opts && opts.section) STATE.section = opts.section;
   if (STATE.dashTimer){ clearInterval(STATE.dashTimer); STATE.dashTimer = null; }
   render();
 }
 
 function render(){
-  var dashLike = STATE.view === 'dashboard' || STATE.view === 'woDetail';
+  var dashLike = STATE.view === 'dashboard' || STATE.view === 'pipeDetail';
   qsa('nav button').forEach(function(b){ b.classList.toggle('active', b.dataset.nav === (dashLike ? 'dashboard' : 'home')); });
   var app = E('app');
   if (STATE.view === 'home') app.innerHTML = viewHome();
   else if (STATE.view === 'controller') app.innerHTML = viewController(false);
   else if (STATE.view === 'controllerNew') app.innerHTML = viewController(true);
+  else if (STATE.view === 'addPipe') app.innerHTML = viewAddPipe();
   else if (STATE.view === 'tagPrinted') app.innerHTML = viewTagPrinted();
   else if (STATE.view === 'operator') app.innerHTML = viewOperator();
   else if (STATE.view === 'dashboard') app.innerHTML = viewDashboard();
-  else if (STATE.view === 'woDetail') app.innerHTML = viewWoDetail();
+  else if (STATE.view === 'pipeDetail') app.innerHTML = viewPipeDetail();
   else if (STATE.view === 'tv') app.innerHTML = viewTV();
   bindView();
 }
 
 /* ============================= HOME ============================= */
 function viewHome(){
-  var urlCode = new URLSearchParams(location.search).get('code') || '';
+  var params = new URLSearchParams(location.search);
+  var urlPipe = params.get('pipe') || '';
   return '' +
   '<section class="card">' +
-    '<h2>Open a work order</h2>' +
+    '<h2>Open a pipe or work order</h2>' +
     '<div class="row">' +
-      '<div class="fld" style="flex:1;min-width:180px"><label>Work order / production code</label>' +
-        '<input id="codeInput" placeholder="e.g. BL20260128" value="'+esc(urlCode)+'"></div>' +
+      '<div class="fld" style="flex:1;min-width:180px"><label>Pipe code or work order code</label>' +
+        '<input id="codeInput" placeholder="e.g. BL20260128-R1" value="'+esc(urlPipe)+'"></div>' +
       '<button class="btn" id="scanBtn" style="align-self:flex-end">Scan QR</button>' +
       '<button class="btn pri" id="goBtn" style="align-self:flex-end">Go</button>' +
     '</div>' +
@@ -356,7 +377,7 @@ function viewHome(){
   '</section>' +
   '<section class="card">' +
     '<h2>New work order</h2>' +
-    '<p class="muted" style="margin-top:0">Controller: create a work order with reference targets from the MDS and recipe cards, then print the scannable tag.</p>' +
+    '<p class="muted" style="margin-top:0">Controller: create a work order with reference targets from the MDS and recipe cards. A work order can hold several pipes/reels sharing the same targets — add each as its own pipe afterward.</p>' +
     '<button class="btn pri" id="newWoBtn">+ New work order</button>' +
   '</section>' +
   '<section class="card no-print">' +
@@ -378,7 +399,7 @@ function bindHome(){
   E('scanBtn').addEventListener('click', function(){ startScan(function(code){ E('codeInput').value = code; lookupCode(code); }); });
   E('goBtn').addEventListener('click', function(){ lookupCode(E('codeInput').value.trim()); });
   E('codeInput').addEventListener('keydown', function(ev){ if (ev.key==='Enter') lookupCode(E('codeInput').value.trim()); });
-  E('newWoBtn').addEventListener('click', function(){ go('controllerNew', {code:''}); });
+  E('newWoBtn').addEventListener('click', function(){ go('controllerNew', {workOrderCode:''}); });
   E('saveApiBtn').addEventListener('click', function(){
     var v = E('apiUrlInput').value.trim();
     if (v){ localStorage.setItem('srtp_api_url', v); API_URL = v; } else { localStorage.removeItem('srtp_api_url'); API_URL = DEFAULT_API_URL; }
@@ -386,38 +407,56 @@ function bindHome(){
   });
   E('saveNameBtn').addEventListener('click', function(){ setOperatorName(E('opNameInput').value.trim()); toast('Name saved'); });
 
-  var urlCode = new URLSearchParams(location.search).get('code');
-  if (urlCode) lookupCode(urlCode);
+  var urlPipe = new URLSearchParams(location.search).get('pipe');
+  if (urlPipe) lookupCode(urlPipe);
 }
 
 function lookupCode(code){
   code = (code||'').trim();
-  if (!code){ toast('Enter a work order code', true); return; }
+  if (!code){ toast('Enter a code', true); return; }
   var box = E('homeResult');
   box.innerHTML = '<p class="muted">Looking up '+esc(code)+'&hellip;</p>';
-  apiGet('getWorkOrder', {code: code}).then(function(data){
-    STATE.code = code; applyWorkOrderData(data);
+
+  apiGet('getPipe', {pipeCode: code}).then(function(data){
+    applyPipeData(data);
+    STATE.pipeCode = code; STATE.workOrderCode = data.pipe.WorkOrderCode;
     box.innerHTML =
-      '<div class="row"><span class="ok">Found:</span> <b>'+esc(code)+'</b> &mdash; '+esc(data.workOrder.Customer||'')+
-      ' <span class="spacer"></span>' +
-      '<button class="btn" id="editWoBtn">Edit targets</button>' +
+      '<div class="row"><span class="ok">Pipe found:</span> <b>'+esc(code)+'</b> ' +
+      '<span class="muted">work order '+esc(data.pipe.WorkOrderCode)+' &middot; '+esc(data.workOrder.Customer||'')+'</span>' +
+      '<span class="spacer"></span>' +
+      '<button class="btn" id="viewWoFromPipeBtn">View work order</button>' +
       '<button class="btn pri" id="openOpBtn">Log measurements</button></div>';
-    E('editWoBtn').addEventListener('click', function(){ go('controller', {code: code}); });
-    E('openOpBtn').addEventListener('click', function(){ go('operator', {code: code, section: firstOpenSection(data.workOrder)}); });
-  }).catch(function(err){
-    box.innerHTML = '<p class="flag">Not found.</p><button class="btn pri" id="createHereBtn">Create work order '+esc(code)+'</button>';
-    var b = E('createHereBtn');
-    if (b) b.addEventListener('click', function(){ go('controllerNew', {code: code}); });
+    E('viewWoFromPipeBtn').addEventListener('click', function(){ lookupCode(data.pipe.WorkOrderCode); });
+    E('openOpBtn').addEventListener('click', function(){ go('operator', {pipeCode: code, section: firstOpenSection(data.pipe)}); });
+  }).catch(function(){
+    apiGet('getWorkOrderInfo', {code: code}).then(function(info){
+      STATE.workOrderCode = code;
+      var wo = info.workOrder;
+      var pipesHtml = info.pipes.length ? '<table style="margin-top:8px"><thead><tr><th class="l">Pipe</th><th>Status</th></tr></thead><tbody>' +
+        info.pipes.map(function(p){
+          return '<tr class="homePipeRow" data-pipe="'+esc(p.PipeCode)+'" style="cursor:pointer"><td class="l">'+esc(p.PipeCode)+'</td><td>'+pillHtml(p.OverallStatus)+'</td></tr>';
+        }).join('') + '</tbody></table>' : '<p class="muted" style="margin-top:8px">No pipes yet on this work order.</p>';
+      box.innerHTML =
+        '<div class="row"><span class="ok">Work order found:</span> <b>'+esc(wo.Code)+'</b> <span class="muted">'+esc(wo.Customer||'')+'</span>' +
+        '<span class="spacer"></span>' +
+        '<button class="btn" id="editWoBtn">Edit targets</button>' +
+        '<button class="btn pri" id="addPipeBtn">+ Add new pipe</button></div>' +
+        pipesHtml;
+      E('editWoBtn').addEventListener('click', function(){ go('controller', {workOrderCode: wo.Code}); });
+      E('addPipeBtn').addEventListener('click', function(){ go('addPipe', {workOrderCode: wo.Code}); });
+      qsa('.homePipeRow', box).forEach(function(tr){
+        tr.addEventListener('click', function(){ lookupCode(tr.dataset.pipe); });
+      });
+    }).catch(function(){
+      box.innerHTML = '<p class="flag">No pipe or work order found for "'+esc(code)+'".</p>' +
+        '<button class="btn pri" id="createHereBtn">Create work order '+esc(code)+'</button>';
+      var b = E('createHereBtn');
+      if (b) b.addEventListener('click', function(){ go('controllerNew', {workOrderCode: code}); });
+    });
   });
 }
 
-function firstOpenSection(wo){
-  if (wo.BL_Status !== 'Complete') return 'Baseline';
-  if (wo.BR_Status !== 'Complete') return 'Braidline';
-  return 'Coverline';
-}
-
-/* ============================= CONTROLLER ============================= */
+/* ============================= CONTROLLER (work order) ============================= */
 function processFieldsHtml(p, wo){
   var P = p.toUpperCase();
   var g = function(field){ return wo ? esc(wo[P+'_'+field]) : ''; };
@@ -451,15 +490,17 @@ function viewController(isNew){
   var v = function(f){ return wo ? esc(wo[f]) : ''; };
   return '' +
   '<section class="card">' +
-    '<div class="row"><h2 style="border:none;margin:0">'+(isNew?'New work order':'Edit work order — '+esc(STATE.code))+'</h2></div>' +
+    '<div class="row"><h2 style="border:none;margin:0">'+(isNew?'New work order':'Edit work order — '+esc(STATE.workOrderCode))+'</h2></div>' +
     '<div class="grid g2" style="margin-top:8px">' +
-      (isNew ? '<div class="fld"><label>Work order / production code</label><input id="f_code" value="'+esc(STATE.code)+'" placeholder="e.g. BL20260128"></div>' : '') +
+      (isNew ? '<div class="fld"><label>Work order code</label><input id="f_code" value="'+esc(STATE.workOrderCode)+'" placeholder="e.g. BL20260128"></div>' : '') +
       '<div class="fld"><label>Customer</label><input id="f_customer" value="'+v('Customer')+'"></div>' +
       '<div class="fld"><label>Product code</label><input id="f_productCode" value="'+v('ProductCode')+'" placeholder="e.g. LP1050 / BT1280LPA"></div>' +
       '<div class="fld"><label>Pipe size</label><input id="f_pipeSize" value="'+v('PipeSize')+'" placeholder="e.g. 1.5&quot; nominal"></div>' +
+      '<div class="fld"><label>Project length (ft)</label><input id="f_projectLength" type="number" step="1" value="'+v('ProjectLength')+'" placeholder="total length needed"></div>' +
       '<div class="fld"><label>Controller / created by</label><input id="f_createdBy" value="'+(isNew? esc(getOperatorName()) : v('CreatedBy'))+'"></div>' +
       '<div class="fld"><label>Report email(s)</label><input id="f_emailTo" value="'+(isNew? 'dwilliams@specialtyrtp.com' : v('EmailTo'))+'" placeholder="comma-separated"></div>' +
     '</div>' +
+    '<p class="muted" style="margin:8px 0 0">This work order can hold several pipes/reels — since reel capacity may not fit the full project length in one run. Set targets once here; each pipe tracks its own progress and actual length.</p>' +
   '</section>' +
 
   '<section class="card"><h2>Baseline — reference targets</h2>' +
@@ -468,6 +509,7 @@ function viewController(isNew){
       '<div class="fld"><label>OD tolerance ± (in)</label><input id="f_blODTol" type="number" step="0.001" value="'+v('BL_ODTol')+'"></div>' +
       '<div class="fld"><label>Target wall thickness (in)</label><input id="f_blTargetWall" type="number" step="0.001" value="'+v('BL_TargetWall')+'"></div>' +
       '<div class="fld"><label>Target ID (in)</label><input id="f_blTargetID" type="number" step="0.001" value="'+v('BL_TargetID')+'"></div>' +
+      '<div class="fld"><label>Target length per pipe (ft)</label><input id="f_blTargetLength" type="number" step="1" value="'+v('BL_TargetLength')+'"></div>' +
     '</div>' +
     processFieldsHtml('bl', wo) +
     '<div class="fld" style="margin-top:8px"><label>Recipe / MDS reference notes</label><textarea id="f_blNotes">'+v('BL_Notes')+'</textarea></div>' +
@@ -482,6 +524,7 @@ function viewController(isNew){
       '<div class="fld"><label>OD tolerance ± (in)</label><input id="f_brODTol" type="number" step="0.001" value="'+v('BR_ODTol')+'"></div>' +
       '<div class="fld"><label>Target pitch (in) — cross braid</label><input id="f_brTargetPitch" type="number" step="0.01" value="'+v('BR_TargetPitch')+'"></div>' +
       '<div class="fld"><label>Pitch tolerance ± (in)</label><input id="f_brPitchTol" type="number" step="0.01" value="'+v('BR_PitchTol')+'"></div>' +
+      '<div class="fld"><label>Target length per pipe (ft)</label><input id="f_brTargetLength" type="number" step="1" value="'+v('BR_TargetLength')+'"></div>' +
     '</div>' +
     '<div class="fld" style="margin-top:8px"><label>Recipe reference notes</label><textarea id="f_brNotes">'+v('BR_Notes')+'</textarea></div>' +
   '</section>' +
@@ -492,6 +535,7 @@ function viewController(isNew){
       '<div class="fld"><label>OD tolerance ± (in)</label><input id="f_cvODTol" type="number" step="0.001" value="'+v('CV_ODTol')+'"></div>' +
       '<div class="fld"><label>Target wall thickness (in)</label><input id="f_cvTargetWall" type="number" step="0.001" value="'+v('CV_TargetWall')+'"></div>' +
       '<div class="fld"><label>Target ID (in)</label><input id="f_cvTargetID" type="number" step="0.001" value="'+v('CV_TargetID')+'"></div>' +
+      '<div class="fld"><label>Target length per pipe (ft)</label><input id="f_cvTargetLength" type="number" step="1" value="'+v('CV_TargetLength')+'"></div>' +
     '</div>' +
     processFieldsHtml('cv', wo) +
     '<div class="fld" style="margin-top:8px"><label>Recipe / MDS reference notes</label><textarea id="f_cvNotes">'+v('CV_Notes')+'</textarea></div>' +
@@ -513,13 +557,17 @@ function collectControllerForm(isNew){
   var body = {
     customer: E('f_customer').value.trim(), productCode: E('f_productCode').value.trim(),
     pipeSize: E('f_pipeSize').value.trim(), emailTo: E('f_emailTo').value.trim(),
+    projectLength: E('f_projectLength').value,
     blTargetOD: E('f_blTargetOD').value, blODTol: E('f_blODTol').value,
-    blTargetWall: E('f_blTargetWall').value, blTargetID: E('f_blTargetID').value, blNotes: E('f_blNotes').value,
+    blTargetWall: E('f_blTargetWall').value, blTargetID: E('f_blTargetID').value,
+    blTargetLength: E('f_blTargetLength').value, blNotes: E('f_blNotes').value,
     brLongsCount: E('f_brLongsCount').value, brLongsEndsUp: E('f_brLongsEndsUp').value, brXbraidEndsUp: E('f_brXbraidEndsUp').value,
     brTargetPitch: E('f_brTargetPitch').value, brPitchTol: E('f_brPitchTol').value,
-    brTargetOD: E('f_brTargetOD').value, brODTol: E('f_brODTol').value, brNotes: E('f_brNotes').value,
+    brTargetOD: E('f_brTargetOD').value, brODTol: E('f_brODTol').value,
+    brTargetLength: E('f_brTargetLength').value, brNotes: E('f_brNotes').value,
     cvTargetOD: E('f_cvTargetOD').value, cvODTol: E('f_cvODTol').value,
-    cvTargetWall: E('f_cvTargetWall').value, cvTargetID: E('f_cvTargetID').value, cvNotes: E('f_cvNotes').value
+    cvTargetWall: E('f_cvTargetWall').value, cvTargetID: E('f_cvTargetID').value,
+    cvTargetLength: E('f_cvTargetLength').value, cvNotes: E('f_cvNotes').value
   };
   collectProcessFields('bl', body);
   collectProcessFields('cv', body);
@@ -532,71 +580,105 @@ function bindController(isNew){
   E('saveWoBtn').addEventListener('click', function(){
     var body = collectControllerForm(isNew);
     if (isNew && !body.code){ toast('Work order code is required', true); return; }
-    var call = isNew ? apiPost('createWorkOrder', body) : apiPost('updateWorkOrder', Object.assign({code: STATE.code}, body));
+    var call = isNew ? apiPost('createWorkOrder', body) : apiPost('updateWorkOrder', Object.assign({code: STATE.workOrderCode}, body));
     E('saveWoBtn').disabled = true;
     call.then(function(res){
       toast(isNew ? 'Work order created' : 'Saved');
-      STATE.code = isNew ? body.code : STATE.code;
-      return apiGet('getWorkOrder', {code: STATE.code});
-    }).then(function(data){
-      applyWorkOrderData(data);
-      if (isNew) go('tagPrinted', {code: STATE.code}); else go('home');
+      STATE.workOrderCode = isNew ? body.code : STATE.workOrderCode;
+      if (isNew) go('addPipe', {workOrderCode: STATE.workOrderCode});
+      else go('home');
     }).catch(function(err){ toast(err.message, true); E('saveWoBtn').disabled = false; });
+  });
+}
+
+/* ============================= ADD PIPE ============================= */
+function viewAddPipe(){
+  return '<section class="card">' +
+    '<h2>Add a pipe — work order '+esc(STATE.workOrderCode)+'</h2>' +
+    '<p class="muted" style="margin-top:0">Each pipe/reel shares this work order&rsquo;s targets but gets a clean slate: its own status per section, its own readings, and its own length.</p>' +
+    '<div class="grid g2">' +
+      '<div class="fld"><label>Pipe code</label><input id="f_pipeCode" placeholder="e.g. BL20260128-R1"></div>' +
+      '<div class="fld"><label>Created by</label><input id="f_pipeCreatedBy" value="'+esc(getOperatorName())+'"></div>' +
+    '</div>' +
+    '<div class="row" style="margin-top:10px">' +
+      '<button class="btn" id="cancelPipeBtn">Cancel</button>' +
+      '<span class="spacer"></span>' +
+      '<button class="btn pri" id="createPipeBtn">Create pipe</button>' +
+    '</div>' +
+  '</section>';
+}
+
+function bindAddPipe(){
+  E('cancelPipeBtn').addEventListener('click', function(){ go('home'); });
+  E('createPipeBtn').addEventListener('click', function(){
+    var pipeCode = E('f_pipeCode').value.trim();
+    if (!pipeCode){ toast('Pipe code is required', true); return; }
+    var createdBy = E('f_pipeCreatedBy').value.trim();
+    setOperatorName(createdBy);
+    E('createPipeBtn').disabled = true;
+    apiPost('createPipe', {pipeCode: pipeCode, workOrderCode: STATE.workOrderCode, createdBy: createdBy})
+      .then(function(){ toast('Pipe created'); return apiGet('getPipe', {pipeCode: pipeCode}); })
+      .then(function(data){ applyPipeData(data); STATE.pipeCode = pipeCode; go('tagPrinted', {pipeCode: pipeCode}); })
+      .catch(function(err){ toast(err.message, true); E('createPipeBtn').disabled = false; });
   });
 }
 
 /* ============================= PRINTABLE TAG ============================= */
 function viewTagPrinted(){
-  var wo = STATE.workOrder;
-  var tagUrl = location.origin + location.pathname + '?code=' + encodeURIComponent(STATE.code);
+  var pipe = STATE.pipe, wo = STATE.workOrder;
   return '' +
   '<section class="card">' +
-    '<h2>Work order created</h2>' +
+    '<h2>Pipe created</h2>' +
     '<div class="qrbox" id="tagQr"></div>' +
     '<div class="tagmeta">' +
-      '<div style="font-size:18px;font-weight:700">'+esc(STATE.code)+'</div>' +
+      '<div style="font-size:18px;font-weight:700">'+esc(pipe.PipeCode)+'</div>' +
+      '<div class="muted">Work order '+esc(pipe.WorkOrderCode)+'</div>' +
       '<div class="muted">'+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+' &middot; '+esc(wo.PipeSize||'')+'</div>' +
     '</div>' +
     '<div class="row" style="justify-content:center;margin-top:10px">' +
       '<button class="btn" id="printBtn">Print tag</button>' +
       '<button class="btn pri" id="startOpBtn">Start Baseline entry</button>' +
+      '<button class="btn" id="addAnotherBtn">Add another pipe</button>' +
       '<button class="btn" id="homeAfterBtn">Home</button>' +
     '</div>' +
   '</section>';
 }
 
 function bindTagPrinted(){
-  var tagUrl = location.origin + location.pathname + '?code=' + encodeURIComponent(STATE.code);
-  var qr = qrcode(0, 'M'); qr.addData(tagUrl); qr.make();
-  E('tagQr').innerHTML = qr.createSvgTag({cellSize:5, margin:4});
+  var pipe = STATE.pipe, wo = STATE.workOrder;
+  var tagUrl = location.origin + location.pathname + '?pipe=' + encodeURIComponent(pipe.PipeCode) + '&wo=' + encodeURIComponent(pipe.WorkOrderCode);
+  var qrObj = qrcode(0, 'M'); qrObj.addData(tagUrl); qrObj.make();
+  E('tagQr').innerHTML = qrObj.createSvgTag({cellSize:5, margin:4});
   var printTag = E('printTag');
   printTag.innerHTML = '<div style="font-family:Segoe UI,Arial,sans-serif;padding:24px;text-align:center;max-width:3in">' +
-    qr.createSvgTag({cellSize:6, margin:4}) +
-    '<div style="font-size:20px;font-weight:700;margin-top:8px">'+esc(STATE.code)+'</div>' +
-    '<div style="font-size:12px;color:#555">'+esc(STATE.workOrder.Customer||'')+'</div>' +
-    '<div style="font-size:12px;color:#555">'+esc(STATE.workOrder.ProductCode||'')+' &middot; '+esc(STATE.workOrder.PipeSize||'')+'</div>' +
+    qrObj.createSvgTag({cellSize:6, margin:4}) +
+    '<div style="font-size:20px;font-weight:700;margin-top:8px">'+esc(pipe.PipeCode)+'</div>' +
+    '<div style="font-size:11px;color:#555">Work order '+esc(pipe.WorkOrderCode)+'</div>' +
+    '<div style="font-size:12px;color:#555">'+esc(wo.Customer||'')+'</div>' +
+    '<div style="font-size:12px;color:#555">'+esc(wo.ProductCode||'')+' &middot; '+esc(wo.PipeSize||'')+'</div>' +
   '</div>';
   E('printBtn').addEventListener('click', function(){ window.print(); });
-  E('startOpBtn').addEventListener('click', function(){ go('operator', {code: STATE.code, section: 'Baseline'}); });
+  E('startOpBtn').addEventListener('click', function(){ go('operator', {pipeCode: pipe.PipeCode, section: 'Baseline'}); });
+  E('addAnotherBtn').addEventListener('click', function(){ go('addPipe', {workOrderCode: pipe.WorkOrderCode}); });
   E('homeAfterBtn').addEventListener('click', function(){ go('home'); });
 }
 
 /* ============================= OPERATOR ============================= */
 function viewOperator(){
-  var wo = STATE.workOrder, sec = STATE.section;
+  var pipe = STATE.pipe, wo = STATE.workOrder, sec = STATE.section;
   var prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
-  var status = wo[prefix+'_Status'];
+  var status = pipe[prefix+'_Status'];
 
   return '' +
   '<div class="row" style="margin-bottom:8px">' +
-    '<div><b>'+esc(STATE.code)+'</b> <span class="muted">'+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+'</span></div>' +
+    '<div><b>'+esc(pipe.PipeCode)+'</b> <span class="muted">work order '+esc(pipe.WorkOrderCode)+' &middot; '+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+'</span></div>' +
     '<span class="spacer"></span>' +
     '<button class="btn sm" id="emailNowBtn">Email report now</button>' +
     '<button class="btn sm" id="backHomeBtn">Home</button>' +
   '</div>' +
   '<div class="tabs">' +
     ['Baseline','Braidline','Coverline'].map(function(s){
-      var st = wo[(s==='Baseline'?'BL':s==='Braidline'?'BR':'CV')+'_Status'];
+      var st = pipe[(s==='Baseline'?'BL':s==='Braidline'?'BR':'CV')+'_Status'];
       return '<button data-sec="'+s+'" class="'+(s===sec?'active':'')+'">'+s+' '+pillHtml(st)+'</button>';
     }).join('') +
   '</div>' +
@@ -604,11 +686,17 @@ function viewOperator(){
   '<section class="card">' +
     '<h2>Reference targets</h2>' +
     referenceTargetsHtml(wo, sec) +
-    '<div class="row" style="margin-top:10px">' +
+    '<div class="row" style="margin-top:10px" id="completeRow">' +
       '<span class="muted">Section status: '+pillHtml(status)+'</span>' +
       '<span class="spacer"></span>' +
-      (status!=='Complete' ? '<button class="btn sm" id="completeSecBtn">Mark '+sec+' complete</button>' : '<span class="ok">Completed '+fmtTime(wo[prefix+'_CompletedAt'])+'</span>') +
+      (status!=='Complete' ? '<button class="btn sm" id="showCompleteBtn">Mark '+sec+' complete</button>' :
+        '<span class="ok">Completed '+fmtTime(pipe[prefix+'_CompletedAt'])+(pipe[prefix+'_ActualLength']!=='' ? ' &middot; '+pipe[prefix+'_ActualLength']+' ft' : '')+'</span>') +
     '</div>' +
+    (status!=='Complete' ? '<div class="row" id="completeForm" style="display:none;margin-top:8px">' +
+      '<div class="fld" style="max-width:160px"><label>Actual length (ft)</label><input id="completeLength" type="number" step="1"></div>' +
+      '<button class="btn sm" id="cancelCompleteBtn" style="align-self:flex-end">Cancel</button>' +
+      '<button class="btn sm pri" id="confirmCompleteBtn" style="align-self:flex-end">Confirm complete</button>' +
+    '</div>' : '') +
   '</section>' +
 
   '<section class="card">' +
@@ -644,18 +732,13 @@ function viewOperator(){
   '</section>';
 }
 
-function pillHtml(status){
-  var cls = status==='Complete' ? 'complete' : status==='In progress' ? 'inprogress' : 'notstarted';
-  return '<span class="pill '+cls+'">'+esc(status||'Not started')+'</span>';
-}
-
 function referenceTargetsHtml(wo, sec){
   if (sec==='Baseline'){
     return '<div class="grid g4">' +
       '<div class="kpi"><b>Target OD</b><span>'+fmtTol(wo.BL_TargetOD)+'</span><i>&plusmn; '+fmtTol(wo.BL_ODTol)+'</i></div>' +
       '<div class="kpi"><b>Target wall</b><span>'+fmtTol(wo.BL_TargetWall)+'</span></div>' +
       '<div class="kpi"><b>Target ID</b><span>'+fmtTol(wo.BL_TargetID)+'</span></div>' +
-      '<div class="kpi"><b>16-pt check</b><span>Start / End</span></div>' +
+      '<div class="kpi"><b>Target length</b><span>'+fmtTol(wo.BL_TargetLength)+'</span><i>ft &middot; 16-pt check Start/End</i></div>' +
     '</div>' + processRefHtml('BL', wo) + (wo.BL_Notes ? '<p class="muted">'+esc(wo.BL_Notes)+'</p>' : '');
   }
   if (sec==='Braidline'){
@@ -663,17 +746,16 @@ function referenceTargetsHtml(wo, sec){
       '<div class="kpi"><b>Longs</b><span>'+fmtTol(wo.BR_LongsCount)+' &times; '+fmtTol(wo.BR_Longs)+'</span><i>carriers &times; ends up</i></div>' +
       '<div class="kpi"><b>Xbraids — ends up</b><span>'+fmtTol(wo.BR_XbraidEndsUp)+'</span></div>' +
       '<div class="kpi"><b>Target pitch</b><span>'+fmtTol(wo.BR_TargetPitch)+'</span><i>&plusmn; '+fmtTol(wo.BR_PitchTol)+'</i></div>' +
-      '<div class="kpi"><b>Target OD</b><span>'+fmtTol(wo.BR_TargetOD)+'</span><i>&plusmn; '+fmtTol(wo.BR_ODTol)+'</i></div>' +
+      '<div class="kpi"><b>Target OD / length</b><span>'+fmtTol(wo.BR_TargetOD)+'</span><i>&plusmn; '+fmtTol(wo.BR_ODTol)+' &middot; '+fmtTol(wo.BR_TargetLength)+' ft</i></div>' +
     '</div>' + (wo.BR_Notes ? '<p class="muted">'+esc(wo.BR_Notes)+'</p>' : '');
   }
   return '<div class="grid g4">' +
     '<div class="kpi"><b>Target OD</b><span>'+fmtTol(wo.CV_TargetOD)+'</span><i>&plusmn; '+fmtTol(wo.CV_ODTol)+'</i></div>' +
     '<div class="kpi"><b>Target wall</b><span>'+fmtTol(wo.CV_TargetWall)+'</span></div>' +
     '<div class="kpi"><b>Target ID</b><span>'+fmtTol(wo.CV_TargetID)+'</span></div>' +
-    '<div class="kpi"><b>12-pt check</b><span>Start / End</span></div>' +
+    '<div class="kpi"><b>Target length</b><span>'+fmtTol(wo.CV_TargetLength)+'</span><i>ft &middot; 12-pt check Start/End</i></div>' +
   '</div>' + processRefHtml('CV', wo) + (wo.CV_Notes ? '<p class="muted">'+esc(wo.CV_Notes)+'</p>' : '');
 }
-function fmtTol(v){ return (v===''||v===undefined||v===null) ? '—' : v; }
 
 function processRefHtml(prefix, wo){
   var parts = [];
@@ -810,37 +892,32 @@ function liveThicknessCalc(sec){
   E('tcOv').textContent = round4(Math.max.apply(null,pts) - Math.min.apply(null,pts)) + '"';
 }
 
-function applyWorkOrderData(data){
-  STATE.workOrder = data.workOrder; STATE.readings = data.readings;
-  STATE.thicknessChecks = data.thicknessChecks; STATE.notes = data.notes; STATE.photos = data.photos;
-  STATE.materialUsage = data.materialUsage || [];
-}
-
-function reloadWorkOrder(code){
-  return apiGet('getWorkOrder', {code: code}).then(function(data){ applyWorkOrderData(data); });
-}
-
 function bindOperator(){
   E('backHomeBtn').addEventListener('click', function(){ go('home'); });
+  qsa('.tabs button').forEach(function(b){ b.addEventListener('click', function(){ go('operator', {pipeCode: STATE.pipeCode, section: b.dataset.sec}); }); });
+
+  var sec = STATE.section, prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
+
   E('emailNowBtn').addEventListener('click', function(){
     E('emailNowBtn').disabled = true;
-    apiPost('sendReport', {code: STATE.code, trigger: 'manual'})
+    apiPost('sendReport', {pipeCode: STATE.pipeCode, trigger: 'manual'})
       .then(function(res){ toast('Report emailed to ' + res.sentTo); })
       .catch(function(err){ toast(err.message, true); })
       .then(function(){ E('emailNowBtn').disabled = false; });
   });
-  qsa('.tabs button').forEach(function(b){ b.addEventListener('click', function(){ go('operator', {code: STATE.code, section: b.dataset.sec}); }); });
 
-  var sec = STATE.section, prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
-
-  var cb = E('completeSecBtn');
-  if (cb) cb.addEventListener('click', function(){
-    if (!confirm('Mark '+sec+' complete for '+STATE.code+'? This will email the report.')) return;
-    cb.disabled = true;
-    apiPost('setSectionStatus', {code: STATE.code, section: sec, status: 'Complete'})
-      .then(function(){ toast(sec+' marked complete'); return reloadWorkOrder(STATE.code); })
+  var showBtn = E('showCompleteBtn');
+  if (showBtn) showBtn.addEventListener('click', function(){ E('completeForm').style.display = 'flex'; showBtn.parentElement.style.display = 'none'; });
+  var cancelBtn = E('cancelCompleteBtn');
+  if (cancelBtn) cancelBtn.addEventListener('click', function(){ E('completeForm').style.display = 'none'; E('completeRow').style.display = 'flex'; });
+  var confirmBtn = E('confirmCompleteBtn');
+  if (confirmBtn) confirmBtn.addEventListener('click', function(){
+    if (!confirm('Mark '+sec+' complete for pipe '+STATE.pipeCode+'? This will email the report.')) return;
+    confirmBtn.disabled = true;
+    apiPost('setSectionStatus', {pipeCode: STATE.pipeCode, section: sec, status: 'Complete', actualLength: E('completeLength').value})
+      .then(function(){ toast(sec+' marked complete'); return reloadPipe(STATE.pipeCode); })
       .then(function(){ render(); })
-      .catch(function(err){ toast(err.message, true); cb.disabled = false; });
+      .catch(function(err){ toast(err.message, true); confirmBtn.disabled = false; });
   });
 
   E('submitReadingBtn').addEventListener('click', function(){
@@ -851,16 +928,16 @@ function bindOperator(){
     var odVal = num(E('rdOD').value);
     var jobs = [];
     if (sec === 'Braidline'){
-      var pitchVal = num(qs('#rdPitch') ? E('rdPitch').value : null);
-      if (pitchVal !== null) jobs.push(apiPost('addReading', {code:STATE.code, section:sec, type:'Pitch', value:pitchVal, operator:operator, timestamp:ts}));
+      var pitchVal = num(E('rdPitch') ? E('rdPitch').value : null);
+      if (pitchVal !== null) jobs.push(apiPost('addReading', {pipeCode:STATE.pipeCode, section:sec, type:'Pitch', value:pitchVal, operator:operator, timestamp:ts}));
     }
-    if (odVal !== null) jobs.push(apiPost('addReading', {code:STATE.code, section:sec, type:'OD', value:odVal, operator:operator, timestamp:ts}));
+    if (odVal !== null) jobs.push(apiPost('addReading', {pipeCode:STATE.pipeCode, section:sec, type:'OD', value:odVal, operator:operator, timestamp:ts}));
     if (!jobs.length){ toast('Enter at least one value', true); return; }
     E('submitReadingBtn').disabled = true;
     Promise.all(jobs).then(function(results){
       var anyBad = results.some(function(r){ return r.InTol === 'N'; });
       toast('Reading logged' + (anyBad ? ' — OUT OF TOLERANCE' : ''), anyBad);
-      return reloadWorkOrder(STATE.code);
+      return reloadPipe(STATE.pipeCode);
     }).then(function(){ render(); })
       .catch(function(err){ toast(err.message, true); E('submitReadingBtn').disabled = false; });
   });
@@ -878,8 +955,8 @@ function bindOperator(){
       qsa('.tPoint').forEach(function(inp){ points[Number(inp.dataset.i)] = inp.value; });
       var ts = new Date(E('tcTime').value).toISOString();
       E('submitCheckBtn').disabled = true;
-      apiPost('addThicknessCheck', {code:STATE.code, section:sec, position:E('tcPosition').value, od:od, points:points, operator:operator, timestamp:ts})
-        .then(function(){ toast('Thickness check saved'); return reloadWorkOrder(STATE.code); })
+      apiPost('addThicknessCheck', {pipeCode:STATE.pipeCode, section:sec, position:E('tcPosition').value, od:od, points:points, operator:operator, timestamp:ts})
+        .then(function(){ toast('Thickness check saved'); return reloadPipe(STATE.pipeCode); })
         .then(function(){ render(); })
         .catch(function(err){ toast(err.message, true); E('submitCheckBtn').disabled = false; });
     });
@@ -899,9 +976,9 @@ function bindOperator(){
       var ts = new Date(E('matTime').value).toISOString();
       E('submitMaterialBtn').disabled = true;
       apiPost('addMaterialUsage', {
-        code: STATE.code, section: sec, material: material, lotNumber: E('matLot').value.trim(),
+        pipeCode: STATE.pipeCode, section: sec, material: material, lotNumber: E('matLot').value.trim(),
         startWeight: E('matStart').value, endWeight: E('matEnd').value, operator: operator, timestamp: ts
-      }).then(function(){ toast('Material usage logged'); return reloadWorkOrder(STATE.code); })
+      }).then(function(){ toast('Material usage logged'); return reloadPipe(STATE.pipeCode); })
         .then(function(){ render(); })
         .catch(function(err){ toast(err.message, true); E('submitMaterialBtn').disabled = false; });
     });
@@ -912,8 +989,8 @@ function bindOperator(){
     if (!text){ toast('Enter a note', true); return; }
     var operator = E('opName') ? E('opName').value.trim() : getOperatorName();
     E('submitNoteBtn').disabled = true;
-    apiPost('addNote', {code:STATE.code, section:sec, text:text, operator: operator || getOperatorName()})
-      .then(function(){ toast('Note added'); return reloadWorkOrder(STATE.code); })
+    apiPost('addNote', {pipeCode:STATE.pipeCode, section:sec, text:text, operator: operator || getOperatorName()})
+      .then(function(){ toast('Note added'); return reloadPipe(STATE.pipeCode); })
       .then(function(){ render(); })
       .catch(function(err){ toast(err.message, true); E('submitNoteBtn').disabled = false; });
   });
@@ -926,9 +1003,9 @@ function bindOperator(){
     var reader = new FileReader();
     E('submitPhotoBtn').disabled = true;
     reader.onload = function(){
-      apiPost('addPhoto', {code:STATE.code, section:sec, caption:caption, operator: operator || getOperatorName(),
+      apiPost('addPhoto', {pipeCode:STATE.pipeCode, section:sec, caption:caption, operator: operator || getOperatorName(),
         imageBase64: reader.result, filename: file.name, mimeType: file.type || 'image/jpeg'})
-        .then(function(){ toast('Photo uploaded'); return reloadWorkOrder(STATE.code); })
+        .then(function(){ toast('Photo uploaded'); return reloadPipe(STATE.pipeCode); })
         .then(function(){ render(); })
         .catch(function(err){ toast(err.message, true); E('submitPhotoBtn').disabled = false; });
     };
@@ -938,13 +1015,9 @@ function bindOperator(){
   if (sec !== 'Braidline') liveThicknessCalc(sec);
 }
 
-/* ============================= DASHBOARD ============================= */
+/* ============================= DASHBOARD (grouped by work order) ============================= */
 function viewDashboard(){
-  return '<div class="row no-print" style="margin-bottom:10px">' +
-      '<span class="spacer"></span>' +
-      '<button class="btn pri" data-nav="tv">Open TV view</button>' +
-    '</div>' +
-    '<div id="dashRoot"><p class="muted">Loading&hellip;</p></div>';
+  return '<div id="dashRoot"><p class="muted">Loading&hellip;</p></div>';
 }
 
 function bindDashboard(){
@@ -957,164 +1030,88 @@ function loadDashboard(){
     .catch(function(err){ E('dashRoot').innerHTML = '<p class="flag">Could not load dashboard: '+esc(err.message)+'</p>'; });
 }
 
-/* ---------- TV board (facility display) ---------- */
-var TV_PAGE_SIZE = 6;
-var tvClockTimer = null;
-
-function viewTV(){
-  return '<button class="btn sm tv-exit" data-nav="dashboard">Exit TV view</button>' +
-    '<div class="tv-shell" id="tvRoot"><p class="muted">Loading&hellip;</p></div>';
+function lengthProgressHtml(g){
+  var target = Number(g.projectLength);
+  if (!g.projectLength || isNaN(target) || target <= 0) return '';
+  var pct = Math.max(0, Math.min(100, Math.round(100 * g.producedLength / target)));
+  return '<div class="lenlabel">Project length: '+g.producedLength+' / '+g.projectLength+' ft ('+pct+'%)</div>' +
+    '<div class="lenbar"><div class="lenfill" style="width:'+pct+'%"></div></div>';
 }
 
-function bindTV(){
-  document.documentElement.setAttribute('data-theme', 'dark');
-  document.body.classList.add('tv-active');
-  STATE.tvPage = 0;
-  loadTVBoard();
-  STATE.dashTimer = setInterval(loadTVBoard, 20000);
-  STATE.tvPageTimer = setInterval(advanceTVPage, 8000);
-  startTVClock();
-}
-
-function leaveTVIfActive(){
-  if (STATE.view !== 'tv') return;
-  document.documentElement.removeAttribute('data-theme');
-  document.body.classList.remove('tv-active');
-  if (STATE.tvPageTimer){ clearInterval(STATE.tvPageTimer); STATE.tvPageTimer = null; }
-  stopTVClock();
-}
-
-function startTVClock(){
-  stopTVClock();
-  var tick = function(){ var el = E('tvClock'); if (el) el.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); };
-  tick();
-  tvClockTimer = setInterval(tick, 1000);
-}
-function stopTVClock(){ if (tvClockTimer){ clearInterval(tvClockTimer); tvClockTimer = null; } }
-
-function loadTVBoard(){
-  apiGet('dashboard').then(function(d){ renderTVBoard(d); })
-    .catch(function(err){
-      var r = E('tvRoot');
-      if (r) r.innerHTML = '<div class="tv-empty flag">Could not reach the server:<br>'+esc(err.message)+'</div>';
-    });
-}
-
-function advanceTVPage(){
-  if (!STATE.tvLastData) return;
-  var count = Math.max(1, Math.ceil(STATE.tvLastData.active.length / TV_PAGE_SIZE));
-  STATE.tvPage = (STATE.tvPage + 1) % count;
-  renderTVBoard(STATE.tvLastData);
-}
-
-function renderTVBoard(d){
-  var root = E('tvRoot');
-  if (!root) return;
-  STATE.tvLastData = d;
-  var active = d.active;
-  var pages = [];
-  for (var i = 0; i < active.length; i += TV_PAGE_SIZE) pages.push(active.slice(i, i + TV_PAGE_SIZE));
-  if (!pages.length) pages = [[]];
-  if (STATE.tvPage >= pages.length) STATE.tvPage = 0;
-  var pageItems = pages[STATE.tvPage];
-
-  var cardsHtml = pageItems.length ? pageItems.map(tvCardHtml).join('') : '<div class="tv-empty">No active production right now.</div>';
-
-  root.innerHTML =
-    '<div class="tv-header">' +
-      '<div><div class="tv-title">SRTP Production Floor</div>' +
-      '<div class="tv-sub">'+active.length+' active work order'+(active.length===1?'':'s')+'</div></div>' +
-      '<div class="tv-clock" id="tvClock">&nbsp;</div>' +
-    '</div>' +
-    '<div class="tv-grid">' + cardsHtml + '</div>' +
-    (pages.length > 1 ? '<div class="tv-dots">' + pages.map(function(_, i){ return '<span class="tv-dot'+(i===STATE.tvPage?' active':'')+'"></span>'; }).join('') + '</div>' : '');
-
-  var clockEl = E('tvClock');
-  if (clockEl) clockEl.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-}
-
-function tvCardHtml(w){
-  var lr = w.lastReading;
-  var stale = lr && (Date.now() - new Date(lr.Timestamp).getTime()) > 75*60000;
-  var valueClass = lr ? (lr.InTol==='Y' ? 'good' : lr.InTol==='N' ? 'bad' : '') : '';
-  var names = ['Baseline','Braidline','Coverline'];
-  var statuses = [w.blStatus, w.brStatus, w.cvStatus];
-  var stagesHtml = names.map(function(name, i){
-    var st = statuses[i];
-    var cls = st==='Complete' ? 'complete' : st==='In progress' ? 'active' : 'pending';
-    return '<div class="tv-stage '+cls+'">'+name+'</div>' + (i < 2 ? '<div class="tv-arrow">&rarr;</div>' : '');
+function workOrderGroupHtml(g){
+  var pipeRows = g.pipes.map(function(p){
+    var lr = p.lastReading;
+    var lrHtml = lr ? (esc(lr.Value)+'" '+esc(lr.Type)+' <span class="muted">'+fmtRel(lr.Timestamp)+'</span> ' +
+      (lr.InTol==='Y' ? '<span class="dot good"></span>' : lr.InTol==='N' ? '<span class="dot bad"></span>' : '')) : '<span class="muted">none</span>';
+    var stale = lr && (Date.now()-new Date(lr.Timestamp).getTime()) > 75*60000 && p.overallStatus!=='Complete';
+    return '<tr class="pipeRow" data-pipe="'+esc(p.pipeCode)+'" style="cursor:pointer">' +
+      '<td class="l">'+esc(p.pipeCode)+'</td>' +
+      '<td>'+pillHtml(p.blStatus)+'</td><td>'+pillHtml(p.brStatus)+'</td><td>'+pillHtml(p.cvStatus)+'</td>' +
+      '<td class="l">'+lrHtml+(stale?' <span class="flag">STALE</span>':'')+'</td>' +
+    '</tr>';
   }).join('');
-  return '<div class="tv-card'+(stale?' stale':'')+'">' +
-    (stale ? '<div class="tv-stale-badge">Stale</div>' : '') +
-    '<div class="tv-code">'+esc(w.code)+'</div>' +
-    '<div class="tv-customer">'+esc(w.customer||'')+(w.productCode?' &middot; '+esc(w.productCode):'')+'</div>' +
-    '<div class="tv-pipeline">'+stagesHtml+'</div>' +
-    (lr ?
-      '<div class="tv-reading"><div class="tv-value '+valueClass+'">'+esc(lr.Value)+'<span class="tv-unit">" '+esc(lr.Type)+'</span></div></div>' +
-      '<div class="tv-meta">'+fmtRel(lr.Timestamp)+'</div>'
-      : '<div class="tv-meta">No readings yet</div>') +
-  '</div>';
+  return '<section class="card">' +
+    '<div class="row"><h2 style="border:none;margin:0;padding:0">'+esc(g.workOrderCode)+'</h2>' +
+    '<span class="muted">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</span></div>' +
+    lengthProgressHtml(g) +
+    '<table style="margin-top:6px"><thead><tr><th class="l">Pipe</th><th>Baseline</th><th>Braidline</th><th>Coverline</th><th class="l">Last reading</th></tr></thead><tbody>' + pipeRows + '</tbody></table>' +
+    '<div class="row" style="margin-top:8px"><button class="btn sm" data-addpipe="'+esc(g.workOrderCode)+'">+ Add pipe to this work order</button></div>' +
+  '</section>';
 }
 
 function renderDashboard(d){
   var root = E('dashRoot');
   if (!root) return;
-  var rows = d.active.map(function(w){
-    var lr = w.lastReading;
-    var lrHtml = lr ? (lr.Value+'" '+esc(lr.Type)+' <span class="muted">'+fmtRel(lr.Timestamp)+'</span> ' +
-      (lr.InTol==='Y' ? '<span class="dot good"></span>' : lr.InTol==='N' ? '<span class="dot bad"></span>' : '')) : '<span class="muted">none</span>';
-    var stale = lr && (Date.now()-new Date(lr.Timestamp).getTime()) > 75*60000 && w.overallStatus!=='Complete';
-    return '<tr class="dashRow" data-code="'+esc(w.code)+'" style="cursor:pointer">' +
-      '<td class="l">'+esc(w.code)+'</td><td class="l">'+esc(w.customer)+'</td>' +
-      '<td>'+pillHtml(w.blStatus)+'</td><td>'+pillHtml(w.brStatus)+'</td><td>'+pillHtml(w.cvStatus)+'</td>' +
-      '<td class="l">'+lrHtml+(stale?' <span class="flag">STALE</span>':'')+'</td>' +
-    '</tr>';
-  }).join('');
+  var groupsHtml = d.active.map(workOrderGroupHtml).join('');
 
   root.innerHTML =
-    '<section class="card">' +
-      '<h2>Active work orders ('+d.active.length+')</h2>' +
-      (d.active.length ? '<table><thead><tr><th class="l">Code</th><th class="l">Customer</th><th>Baseline</th><th>Braidline</th><th>Coverline</th><th class="l">Last reading</th></tr></thead><tbody>'+rows+'</tbody></table>'
-        : '<p class="muted">No active work orders.</p>') +
-      '<div class="muted" style="margin-top:8px;font-size:10px">Auto-refreshing every 20s &middot; server time '+fmtTime(d.serverTime)+' &middot; click a row for a bigger detail view</div>' +
-    '</section>' +
+    '<div class="row no-print" style="margin-bottom:10px">' +
+      '<h1 style="font-size:13px">Active work orders ('+d.active.length+')</h1>' +
+      '<span class="spacer"></span>' +
+      '<button class="btn pri" data-nav="tv">Open TV view</button>' +
+    '</div>' +
+    (d.active.length ? groupsHtml : '<section class="card"><p class="muted">No active work orders.</p></section>') +
+    '<div class="muted no-print" style="margin:4px 0 14px;font-size:10px">Auto-refreshing every 20s &middot; server time '+fmtTime(d.serverTime)+'</div>' +
     '<section class="card"><h2>Recently completed</h2>' +
-    (d.recentComplete.length ? '<table><thead><tr><th class="l">Code</th><th class="l">Customer</th><th class="l">Last updated</th></tr></thead><tbody>' +
-      d.recentComplete.map(function(w){ return '<tr><td class="l">'+esc(w.code)+'</td><td class="l">'+esc(w.customer)+'</td><td class="l">'+fmtTime(w.lastUpdated)+'</td></tr>'; }).join('') +
-      '</tbody></table>' : '<p class="muted">None yet.</p>') +
+    (d.recentComplete.length ? d.recentComplete.map(function(g){
+      return '<div class="row"><b>'+esc(g.workOrderCode)+'</b> <span class="muted">'+esc(g.customer||'')+' &middot; '+g.pipes.length+' pipe(s)</span></div>';
+    }).join('') : '<p class="muted">None yet.</p>') +
     '</section>';
 
-  qsa('.dashRow', root).forEach(function(tr){
-    tr.addEventListener('click', function(){ go('woDetail', {code: tr.dataset.code}); });
+  qsa('.pipeRow', root).forEach(function(tr){
+    tr.addEventListener('click', function(){ go('pipeDetail', {pipeCode: tr.dataset.pipe}); });
+  });
+  qsa('[data-addpipe]', root).forEach(function(b){
+    b.addEventListener('click', function(){ go('addPipe', {workOrderCode: b.dataset.addpipe}); });
   });
 }
 
-/* ---------- work order detail (bigger, per-section chart) ---------- */
-function viewWoDetail(){
-  return '<div id="woDetailRoot"><p class="muted">Loading '+esc(STATE.code)+'&hellip;</p></div>';
+/* ---------- pipe detail (bigger, per-section chart) ---------- */
+function viewPipeDetail(){
+  return '<div id="pdRoot"><p class="muted">Loading '+esc(STATE.pipeCode)+'&hellip;</p></div>';
 }
 
-function bindWoDetail(){
-  loadWoDetail(STATE.code);
-  STATE.dashTimer = setInterval(function(){ loadWoDetail(STATE.code); }, 20000);
+function bindPipeDetail(){
+  loadPipeDetail(STATE.pipeCode);
+  STATE.dashTimer = setInterval(function(){ loadPipeDetail(STATE.pipeCode); }, 20000);
 }
 
-function loadWoDetail(code){
-  if (STATE.woDetailCode !== code){ STATE.woDetailSection = null; STATE.woDetailCode = code; }
-  apiGet('getWorkOrder', {code: code}).then(function(data){
-    STATE.woDetailData = data;
-    if (!STATE.woDetailSection) STATE.woDetailSection = firstOpenSection(data.workOrder);
-    renderWoDetail();
+function loadPipeDetail(pipeCode){
+  if (STATE.pdCode !== pipeCode){ STATE.pdSection = null; STATE.pdCode = pipeCode; }
+  apiGet('getPipe', {pipeCode: pipeCode}).then(function(data){
+    STATE.pdData = data;
+    if (!STATE.pdSection) STATE.pdSection = firstOpenSection(data.pipe);
+    renderPipeDetail();
   }).catch(function(err){
-    var r = E('woDetailRoot');
+    var r = E('pdRoot');
     if (r) r.innerHTML = '<section class="card"><p class="flag">'+esc(err.message)+'</p></section>';
   });
 }
 
-function renderWoDetail(){
-  var root = E('woDetailRoot');
+function renderPipeDetail(){
+  var root = E('pdRoot');
   if (!root) return;
-  var data = STATE.woDetailData, wo = data.workOrder, sec = STATE.woDetailSection;
+  var data = STATE.pdData, pipe = data.pipe, wo = data.workOrder, sec = STATE.pdSection;
   var prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
 
   function odSeries(s){ return data.readings.filter(function(r){ return r.Section===s && r.Type==='OD'; }).sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); }); }
@@ -1128,18 +1125,19 @@ function renderWoDetail(){
   var vals = series.map(function(r){ return Number(r.Value); });
   var s = statsOf(vals);
   var tt = targetTol(prefix);
+  var targetLen = wo[prefix+'_TargetLength'], actualLen = pipe[prefix+'_ActualLength'];
 
   root.innerHTML =
     '<div class="row" style="margin-bottom:10px">' +
-      '<div><b style="font-size:20px">'+esc(wo.Code)+'</b> <span class="muted">'+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+' &middot; '+esc(wo.PipeSize||'')+'</span></div>' +
+      '<div><b style="font-size:20px">'+esc(pipe.PipeCode)+'</b> <span class="muted">work order '+esc(pipe.WorkOrderCode)+' &middot; '+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+'</span></div>' +
       '<span class="spacer"></span>' +
-      '<button class="btn sm" id="wdOpenOpBtn">Open operator view</button>' +
-      '<button class="btn sm" id="wdEmailBtn">Email report now</button>' +
-      '<button class="btn sm" id="wdBackBtn">Back to dashboard</button>' +
+      '<button class="btn sm" id="pdOpenOpBtn">Open operator view</button>' +
+      '<button class="btn sm" id="pdEmailBtn">Email report now</button>' +
+      '<button class="btn sm" id="pdBackBtn">Back to dashboard</button>' +
     '</div>' +
     '<div class="tabs">' +
       ['Baseline','Braidline','Coverline'].map(function(s2){
-        var st = wo[(s2==='Baseline'?'BL':s2==='Braidline'?'BR':'CV')+'_Status'];
+        var st = pipe[(s2==='Baseline'?'BL':s2==='Braidline'?'BR':'CV')+'_Status'];
         return '<button data-detailsec="'+s2+'" class="'+(s2===sec?'active':'')+'">'+s2+' '+pillHtml(st)+'</button>';
       }).join('') +
     '</div>' +
@@ -1150,19 +1148,20 @@ function renderWoDetail(){
         (tt ? '<div class="muted" style="font-size:11px;margin-bottom:8px">Shaded band = target '+tt.target+'" &plusmn; '+tt.tol+'" tolerance</div>' : '') +
         odChartSvg(series, tt)
         : '<p class="muted" style="padding:40px 0;text-align:center;font-size:14px">No OD readings yet for '+sec+'.</p>') +
+      (targetLen!=='' || actualLen!=='' ? '<div class="muted" style="margin-top:10px;font-size:11px">Length — target '+fmtTol(targetLen)+' ft &middot; actual '+fmtTol(actualLen)+' ft</div>' : '') +
     '</section>';
 
-  E('wdBackBtn').addEventListener('click', function(){ go('dashboard'); });
-  E('wdOpenOpBtn').addEventListener('click', function(){ go('operator', {code: wo.Code, section: sec}); });
-  E('wdEmailBtn').addEventListener('click', function(){
-    E('wdEmailBtn').disabled = true;
-    apiPost('sendReport', {code: wo.Code, trigger: 'manual'})
+  E('pdBackBtn').addEventListener('click', function(){ go('dashboard'); });
+  E('pdOpenOpBtn').addEventListener('click', function(){ go('operator', {pipeCode: pipe.PipeCode, section: sec}); });
+  E('pdEmailBtn').addEventListener('click', function(){
+    E('pdEmailBtn').disabled = true;
+    apiPost('sendReport', {pipeCode: pipe.PipeCode, trigger: 'manual'})
       .then(function(res){ toast('Report emailed to ' + res.sentTo); })
       .catch(function(err){ toast(err.message, true); })
-      .then(function(){ E('wdEmailBtn').disabled = false; });
+      .then(function(){ E('pdEmailBtn').disabled = false; });
   });
   qsa('[data-detailsec]', root).forEach(function(b){
-    b.addEventListener('click', function(){ STATE.woDetailSection = b.dataset.detailsec; renderWoDetail(); });
+    b.addEventListener('click', function(){ STATE.pdSection = b.dataset.detailsec; renderPipeDetail(); });
   });
 }
 
@@ -1223,6 +1222,108 @@ function odChartSvg(series, tt){
   '</svg>';
 }
 
+/* ============================= TV board (facility display) ============================= */
+var TV_PAGE_SIZE = 4;
+var tvClockTimer = null;
+
+function viewTV(){
+  return '<button class="btn sm tv-exit" data-nav="dashboard">Exit TV view</button>' +
+    '<div class="tv-shell" id="tvRoot"><p class="muted">Loading&hellip;</p></div>';
+}
+
+function bindTV(){
+  document.documentElement.setAttribute('data-theme', 'dark');
+  document.body.classList.add('tv-active');
+  STATE.tvPage = 0;
+  loadTVBoard();
+  STATE.dashTimer = setInterval(loadTVBoard, 20000);
+  STATE.tvPageTimer = setInterval(advanceTVPage, 8000);
+  startTVClock();
+}
+
+function leaveTVIfActive(){
+  if (STATE.view !== 'tv') return;
+  document.documentElement.removeAttribute('data-theme');
+  document.body.classList.remove('tv-active');
+  if (STATE.tvPageTimer){ clearInterval(STATE.tvPageTimer); STATE.tvPageTimer = null; }
+  stopTVClock();
+}
+
+function startTVClock(){
+  stopTVClock();
+  var tick = function(){ var el = E('tvClock'); if (el) el.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); };
+  tick();
+  tvClockTimer = setInterval(tick, 1000);
+}
+function stopTVClock(){ if (tvClockTimer){ clearInterval(tvClockTimer); tvClockTimer = null; } }
+
+function loadTVBoard(){
+  apiGet('dashboard').then(function(d){ renderTVBoard(d); })
+    .catch(function(err){
+      var r = E('tvRoot');
+      if (r) r.innerHTML = '<div class="tv-empty flag">Could not reach the server:<br>'+esc(err.message)+'</div>';
+    });
+}
+
+function advanceTVPage(){
+  if (!STATE.tvLastData) return;
+  var count = Math.max(1, Math.ceil(STATE.tvLastData.active.length / TV_PAGE_SIZE));
+  STATE.tvPage = (STATE.tvPage + 1) % count;
+  renderTVBoard(STATE.tvLastData);
+}
+
+function renderTVBoard(d){
+  var root = E('tvRoot');
+  if (!root) return;
+  STATE.tvLastData = d;
+  var active = d.active;
+  var pages = [];
+  for (var i = 0; i < active.length; i += TV_PAGE_SIZE) pages.push(active.slice(i, i + TV_PAGE_SIZE));
+  if (!pages.length) pages = [[]];
+  if (STATE.tvPage >= pages.length) STATE.tvPage = 0;
+  var pageItems = pages[STATE.tvPage];
+
+  var cardsHtml = pageItems.length ? pageItems.map(tvCardHtml).join('') : '<div class="tv-empty">No active production right now.</div>';
+  var totalPipes = active.reduce(function(sum,g){ return sum + g.activePipes.length; }, 0);
+
+  root.innerHTML =
+    '<div class="tv-header">' +
+      '<div><div class="tv-title">SRTP Production Floor</div>' +
+      '<div class="tv-sub">'+active.length+' active work order'+(active.length===1?'':'s')+' &middot; '+totalPipes+' pipe'+(totalPipes===1?'':'s')+' running</div></div>' +
+      '<div class="tv-clock" id="tvClock">&nbsp;</div>' +
+    '</div>' +
+    '<div class="tv-grid">' + cardsHtml + '</div>' +
+    (pages.length > 1 ? '<div class="tv-dots">' + pages.map(function(_, i){ return '<span class="tv-dot'+(i===STATE.tvPage?' active':'')+'"></span>'; }).join('') + '</div>' : '');
+
+  var clockEl = E('tvClock');
+  if (clockEl) clockEl.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+function tvCardHtml(g){
+  var target = Number(g.projectLength);
+  var pct = (g.projectLength && !isNaN(target) && target > 0) ? Math.max(0, Math.min(100, Math.round(100 * g.producedLength / target))) : null;
+
+  var pipesHtml = g.activePipes.map(function(p){
+    var lr = p.lastReading;
+    var stale = lr && (Date.now() - new Date(lr.Timestamp).getTime()) > 75*60000;
+    var valueClass = lr ? (lr.InTol==='Y' ? 'good' : lr.InTol==='N' ? 'bad' : '') : '';
+    var curSection = p.cvStatus==='In progress' ? 'Coverline' : p.brStatus==='In progress' ? 'Braidline' : p.blStatus==='In progress' ? 'Baseline' : 'Not started';
+    return '<div class="tv-pipe'+(stale?' stale':'')+'">' +
+      '<div class="tv-pipe-code">'+esc(p.pipeCode)+'</div>' +
+      '<div class="tv-pipe-sec">'+esc(curSection)+(stale?' &middot; STALE':'')+'</div>' +
+      (lr ? '<div class="tv-pipe-val '+valueClass+'">'+esc(lr.Value)+'"</div>' : '<div class="tv-pipe-val muted">&mdash;</div>') +
+    '</div>';
+  }).join('');
+
+  return '<div class="tv-card">' +
+    '<div class="tv-code">'+esc(g.workOrderCode)+'</div>' +
+    '<div class="tv-customer">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</div>' +
+    (pct!==null ? '<div class="tv-lenbar"><div class="tv-lenfill" style="width:'+pct+'%"></div></div>' +
+      '<div class="tv-lenlabel">'+g.producedLength+' / '+g.projectLength+' ft ('+pct+'%)</div>' : '') +
+    '<div class="tv-pipelist">' + pipesHtml + '</div>' +
+  '</div>';
+}
+
 /* ============================= SCANNER ============================= */
 var scanStream = null, scanRAF = null;
 function startScan(onResult){
@@ -1241,7 +1342,7 @@ function startScan(onResult){
           if (res && res.data){
             stopScan();
             var text = res.data;
-            var m = text.match(/[?&]code=([^&]+)/);
+            var m = text.match(/[?&]pipe=([^&]+)/);
             onResult(m ? decodeURIComponent(m[1]) : text);
             return;
           }
@@ -1266,10 +1367,11 @@ function bindView(){
   if (STATE.view === 'home') bindHome();
   else if (STATE.view === 'controller') bindController(false);
   else if (STATE.view === 'controllerNew') bindController(true);
+  else if (STATE.view === 'addPipe') bindAddPipe();
   else if (STATE.view === 'tagPrinted') bindTagPrinted();
   else if (STATE.view === 'operator') bindOperator();
   else if (STATE.view === 'dashboard') bindDashboard();
-  else if (STATE.view === 'woDetail') bindWoDetail();
+  else if (STATE.view === 'pipeDetail') bindPipeDetail();
   else if (STATE.view === 'tv') bindTV();
 }
 
