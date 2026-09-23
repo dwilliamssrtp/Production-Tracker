@@ -124,6 +124,16 @@
   .lenfill{height:100%;background:var(--blue);}
   .lenlabel{font-size:10px;color:var(--mut);margin-bottom:8px;}
 
+  .pipecard-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin-top:4px;}
+  .pipecard{border:1px solid var(--line);border-radius:6px;padding:10px 12px;cursor:pointer;background:var(--band);}
+  .pipecard:hover{border-color:var(--accent);}
+  .pipecard-head{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:7px;}
+  .pipecard-head b{font-size:13px;}
+  .pipecard-stages{display:flex;gap:4px;margin-bottom:7px;flex-wrap:wrap;}
+  .pipecard-reading{font-size:11.5px;font-weight:600;}
+  .wo-header{cursor:pointer;}
+  .wo-header:hover{color:var(--accent);}
+
   .odchart{width:100%;height:min(46vw,400px);min-height:260px;}
   .chart-grid{stroke:var(--hair);stroke-width:1;}
   .chart-axis-label{font-size:12px;fill:var(--mut);font-family:"Segoe UI",Arial,sans-serif;}
@@ -149,6 +159,8 @@
   .tv-card{border:1px solid var(--line);border-radius:14px;background:var(--band);
     padding:clamp(16px,2vw,26px);position:relative;overflow:hidden;}
   .tv-code{font-size:clamp(20px,2.4vw,34px);font-weight:800;}
+  .tv-pipecount{font-size:clamp(11px,1.1vw,15px);font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;
+    background:var(--field);border:1px solid var(--line);border-radius:9px;padding:2px 9px;vertical-align:middle;}
   .tv-customer{font-size:clamp(11px,1.2vw,16px);color:var(--mut);margin-top:2px;}
   .tv-lenbar{background:var(--hair);border-radius:5px;height:clamp(8px,.9vw,14px);overflow:hidden;margin-top:10px;}
   .tv-lenfill{height:100%;background:var(--blue);}
@@ -345,7 +357,7 @@ function go(view, opts){
 }
 
 function render(){
-  var dashLike = STATE.view === 'dashboard' || STATE.view === 'pipeDetail';
+  var dashLike = STATE.view === 'dashboard' || STATE.view === 'woDashboard' || STATE.view === 'pipeDetail';
   qsa('nav button').forEach(function(b){ b.classList.toggle('active', b.dataset.nav === (dashLike ? 'dashboard' : 'home')); });
   var app = E('app');
   if (STATE.view === 'home') app.innerHTML = viewHome();
@@ -355,6 +367,7 @@ function render(){
   else if (STATE.view === 'tagPrinted') app.innerHTML = viewTagPrinted();
   else if (STATE.view === 'operator') app.innerHTML = viewOperator();
   else if (STATE.view === 'dashboard') app.innerHTML = viewDashboard();
+  else if (STATE.view === 'woDashboard') app.innerHTML = viewWoDashboard();
   else if (STATE.view === 'pipeDetail') app.innerHTML = viewPipeDetail();
   else if (STATE.view === 'tv') app.innerHTML = viewTV();
   bindView();
@@ -431,17 +444,22 @@ function lookupCode(code){
   }).catch(function(){
     apiGet('getWorkOrderInfo', {code: code}).then(function(info){
       STATE.workOrderCode = code;
+      STATE.workOrder = info.workOrder;
       var wo = info.workOrder;
       var pipesHtml = info.pipes.length ? '<table style="margin-top:8px"><thead><tr><th class="l">Pipe</th><th>Status</th></tr></thead><tbody>' +
         info.pipes.map(function(p){
           return '<tr class="homePipeRow" data-pipe="'+esc(p.PipeCode)+'" style="cursor:pointer"><td class="l">'+esc(p.PipeCode)+'</td><td>'+pillHtml(p.OverallStatus)+'</td></tr>';
         }).join('') + '</tbody></table>' : '<p class="muted" style="margin-top:8px">No pipes yet on this work order.</p>';
       box.innerHTML =
-        '<div class="row"><span class="ok">Work order found:</span> <b>'+esc(wo.Code)+'</b> <span class="muted">'+esc(wo.Customer||'')+'</span>' +
+        '<div class="row"><span class="ok">Work order found:</span> <b>'+esc(wo.Code)+'</b> ' +
+        '<span class="pill inprogress">'+info.pipes.length+' pipe'+(info.pipes.length===1?'':'s')+'</span>' +
+        '<span class="muted">'+esc(wo.Customer||'')+'</span>' +
         '<span class="spacer"></span>' +
+        '<button class="btn" id="viewWodBtn">View pipe dashboard</button>' +
         '<button class="btn" id="editWoBtn">Edit targets</button>' +
         '<button class="btn pri" id="addPipeBtn">+ Add new pipe</button></div>' +
         pipesHtml;
+      E('viewWodBtn').addEventListener('click', function(){ go('woDashboard', {workOrderCode: wo.Code}); });
       E('editWoBtn').addEventListener('click', function(){ go('controller', {workOrderCode: wo.Code}); });
       E('addPipeBtn').addEventListener('click', function(){ go('addPipe', {workOrderCode: wo.Code}); });
       qsa('.homePipeRow', box).forEach(function(tr){
@@ -1051,7 +1069,8 @@ function workOrderGroupHtml(g){
     '</tr>';
   }).join('');
   return '<section class="card">' +
-    '<div class="row"><h2 style="border:none;margin:0;padding:0">'+esc(g.workOrderCode)+'</h2>' +
+    '<div class="row"><h2 class="wo-header" data-wodash="'+esc(g.workOrderCode)+'" style="border:none;margin:0;padding:0">'+esc(g.workOrderCode)+'</h2>' +
+    '<span class="pill inprogress">'+g.pipes.length+' pipe'+(g.pipes.length===1?'':'s')+'</span>' +
     '<span class="muted">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</span></div>' +
     lengthProgressHtml(g) +
     '<table style="margin-top:6px"><thead><tr><th class="l">Pipe</th><th>Baseline</th><th>Braidline</th><th>Coverline</th><th class="l">Last reading</th></tr></thead><tbody>' + pipeRows + '</tbody></table>' +
@@ -1083,6 +1102,9 @@ function renderDashboard(d){
   });
   qsa('[data-addpipe]', root).forEach(function(b){
     b.addEventListener('click', function(){ go('addPipe', {workOrderCode: b.dataset.addpipe}); });
+  });
+  qsa('[data-wodash]', root).forEach(function(h){
+    h.addEventListener('click', function(){ go('woDashboard', {workOrderCode: h.dataset.wodash}); });
   });
 }
 
@@ -1133,7 +1155,7 @@ function renderPipeDetail(){
       '<span class="spacer"></span>' +
       '<button class="btn sm" id="pdOpenOpBtn">Open operator view</button>' +
       '<button class="btn sm" id="pdEmailBtn">Email report now</button>' +
-      '<button class="btn sm" id="pdBackBtn">Back to dashboard</button>' +
+      '<button class="btn sm" id="pdBackBtn">Back to work order</button>' +
     '</div>' +
     '<div class="tabs">' +
       ['Baseline','Braidline','Coverline'].map(function(s2){
@@ -1151,7 +1173,7 @@ function renderPipeDetail(){
       (targetLen!=='' || actualLen!=='' ? '<div class="muted" style="margin-top:10px;font-size:11px">Length — target '+fmtTol(targetLen)+' ft &middot; actual '+fmtTol(actualLen)+' ft</div>' : '') +
     '</section>';
 
-  E('pdBackBtn').addEventListener('click', function(){ go('dashboard'); });
+  E('pdBackBtn').addEventListener('click', function(){ go('woDashboard', {workOrderCode: pipe.WorkOrderCode}); });
   E('pdOpenOpBtn').addEventListener('click', function(){ go('operator', {pipeCode: pipe.PipeCode, section: sec}); });
   E('pdEmailBtn').addEventListener('click', function(){
     E('pdEmailBtn').disabled = true;
@@ -1220,6 +1242,93 @@ function odChartSvg(series, tt){
     '<polyline points="'+pts+'" fill="none" class="chart-line"/>' +
     dots + yLabels + xTicks +
   '</svg>';
+}
+
+/* ============================= WORK ORDER DASHBOARD (all pipes on one work order) ============================= */
+function viewWoDashboard(){
+  return '<div id="wodRoot"><p class="muted">Loading '+esc(STATE.workOrderCode)+'&hellip;</p></div>';
+}
+
+function bindWoDashboard(){
+  loadWoDashboard();
+  STATE.dashTimer = setInterval(loadWoDashboard, 20000);
+}
+
+function loadWoDashboard(){
+  apiGet('dashboard').then(function(d){
+    var all = d.active.concat(d.recentComplete);
+    var g = all.filter(function(x){ return x.workOrderCode === STATE.workOrderCode; })[0];
+    if (!g){
+      E('wodRoot').innerHTML = '<section class="card"><p class="flag">No pipes found for work order '+esc(STATE.workOrderCode)+'.</p>' +
+        '<button class="btn" id="wodAddPipeBtn2">+ Add first pipe</button></section>';
+      var b = E('wodAddPipeBtn2');
+      if (b) b.addEventListener('click', function(){ go('addPipe', {workOrderCode: STATE.workOrderCode}); });
+      return;
+    }
+    renderWoDashboard(g, d.serverTime);
+  }).catch(function(err){
+    var r = E('wodRoot');
+    if (r) r.innerHTML = '<section class="card"><p class="flag">'+esc(err.message)+'</p></section>';
+  });
+}
+
+function renderWoDashboard(g, serverTime){
+  var root = E('wodRoot');
+  if (!root) return;
+  var counts = {complete:0, inprogress:0, notstarted:0};
+  g.pipes.forEach(function(p){
+    if (p.overallStatus === 'Complete') { counts.complete++; return; }
+    var anyStarted = [p.blStatus, p.brStatus, p.cvStatus].some(function(s){ return s !== 'Not started'; });
+    if (anyStarted) counts.inprogress++; else counts.notstarted++;
+  });
+
+  var cardsHtml = g.pipes.map(function(p){
+    var lr = p.lastReading;
+    var stale = lr && (Date.now() - new Date(lr.Timestamp).getTime()) > 75*60000 && p.overallStatus !== 'Complete';
+    var lrHtml = lr
+      ? (esc(lr.Value)+'" '+esc(lr.Type)+' <span class="dot '+(lr.InTol==='Y'?'good':lr.InTol==='N'?'bad':'none')+'"></span> <span class="muted">'+fmtRel(lr.Timestamp)+'</span>')
+      : '<span class="muted">no readings yet</span>';
+    return '<div class="pipecard" data-pipe="'+esc(p.pipeCode)+'">' +
+      '<div class="pipecard-head"><b>'+esc(p.pipeCode)+'</b>'+pillHtml(p.overallStatus)+'</div>' +
+      '<div class="pipecard-stages">'+pillHtml(p.blStatus)+pillHtml(p.brStatus)+pillHtml(p.cvStatus)+'</div>' +
+      '<div class="pipecard-reading">'+lrHtml+(stale?' <span class="flag">STALE</span>':'')+'</div>' +
+    '</div>';
+  }).join('');
+
+  root.innerHTML =
+    '<div class="row" style="margin-bottom:10px">' +
+      '<div><b style="font-size:20px">'+esc(g.workOrderCode)+'</b> ' +
+      '<span class="pill inprogress">'+g.pipes.length+' pipe'+(g.pipes.length===1?'':'s')+'</span> ' +
+      '<span class="muted">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</span></div>' +
+      '<span class="spacer"></span>' +
+      '<button class="btn sm" id="wodAddPipeBtn">+ Add pipe</button>' +
+      '<button class="btn sm" id="wodEditBtn">Edit targets</button>' +
+      '<button class="btn sm" id="wodBackBtn">Back to dashboard</button>' +
+    '</div>' +
+    '<section class="card">' +
+      lengthProgressHtml(g) +
+      '<div class="kpis" style="margin-top:8px">' +
+        '<div class="kpi"><b>Total pipes</b><span>'+g.pipes.length+'</span></div>' +
+        '<div class="kpi"><b>Complete</b><span>'+counts.complete+'</span></div>' +
+        '<div class="kpi"><b>In progress</b><span>'+counts.inprogress+'</span></div>' +
+        '<div class="kpi"><b>Not started</b><span>'+counts.notstarted+'</span></div>' +
+      '</div>' +
+      '<div class="pipecard-grid">' + cardsHtml + '</div>' +
+      '<div class="muted" style="margin-top:10px;font-size:10px">Auto-refreshing every 20s &middot; server time '+fmtTime(serverTime)+' &middot; click a pipe for its full detail/chart</div>' +
+    '</section>';
+
+  E('wodBackBtn').addEventListener('click', function(){ go('dashboard'); });
+  E('wodAddPipeBtn').addEventListener('click', function(){ go('addPipe', {workOrderCode: g.workOrderCode}); });
+  E('wodEditBtn').addEventListener('click', function(){
+    E('wodEditBtn').disabled = true;
+    apiGet('getWorkOrderInfo', {code: g.workOrderCode}).then(function(info){
+      STATE.workOrder = info.workOrder;
+      go('controller', {workOrderCode: g.workOrderCode});
+    }).catch(function(err){ toast(err.message, true); E('wodEditBtn').disabled = false; });
+  });
+  qsa('.pipecard', root).forEach(function(c){
+    c.addEventListener('click', function(){ go('pipeDetail', {pipeCode: c.dataset.pipe}); });
+  });
 }
 
 /* ============================= TV board (facility display) ============================= */
@@ -1316,7 +1425,7 @@ function tvCardHtml(g){
   }).join('');
 
   return '<div class="tv-card">' +
-    '<div class="tv-code">'+esc(g.workOrderCode)+'</div>' +
+    '<div class="tv-code">'+esc(g.workOrderCode)+' <span class="tv-pipecount">'+g.pipes.length+' pipe'+(g.pipes.length===1?'':'s')+'</span></div>' +
     '<div class="tv-customer">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</div>' +
     (pct!==null ? '<div class="tv-lenbar"><div class="tv-lenfill" style="width:'+pct+'%"></div></div>' +
       '<div class="tv-lenlabel">'+g.producedLength+' / '+g.projectLength+' ft ('+pct+'%)</div>' : '') +
@@ -1371,6 +1480,7 @@ function bindView(){
   else if (STATE.view === 'tagPrinted') bindTagPrinted();
   else if (STATE.view === 'operator') bindOperator();
   else if (STATE.view === 'dashboard') bindDashboard();
+  else if (STATE.view === 'woDashboard') bindWoDashboard();
   else if (STATE.view === 'pipeDetail') bindPipeDetail();
   else if (STATE.view === 'tv') bindTV();
 }
