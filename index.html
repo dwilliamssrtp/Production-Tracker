@@ -117,7 +117,51 @@
   .qrbox svg{width:200px;height:200px;background:#fff;padding:8px;border-radius:6px;}
   .tagmeta{text-align:center;font-size:11px;}
 
-  .sparkline{width:100%;height:44px;}
+  .odchart{width:100%;height:230px;}
+  .chart-grid{stroke:var(--hair);stroke-width:1;}
+  .chart-axis-label{font-size:9px;fill:var(--mut);font-family:"Segoe UI",Arial,sans-serif;}
+  .chart-band{fill:var(--blue);fill-opacity:.12;}
+  .chart-target-line{stroke:var(--blue);stroke-width:1;stroke-dasharray:4 3;opacity:.6;}
+  .chart-line{stroke:var(--blue);stroke-width:2;stroke-linejoin:round;stroke-linecap:round;}
+  .chart-dot{fill:var(--blue);stroke:var(--field);stroke-width:1.5;}
+  .chart-dot.bad{fill:var(--crit);}
+
+  /* ---------- TV board ---------- */
+  body.tv-active header{display:none;}
+  body.tv-active main{max-width:none;padding:0;}
+  .tv-exit{position:fixed;top:12px;right:12px;z-index:10;opacity:.28;}
+  .tv-exit:hover{opacity:1;}
+  .tv-shell{min-height:100vh;padding:clamp(16px,2.5vw,40px);}
+  .tv-header{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:clamp(16px,2.5vw,34px);
+    border-bottom:2px solid var(--ink);padding-bottom:clamp(10px,1.4vw,18px);}
+  .tv-title{font-size:clamp(22px,2.6vw,40px);font-weight:800;letter-spacing:.03em;text-transform:uppercase;}
+  .tv-sub{font-size:clamp(11px,1.1vw,16px);color:var(--mut);margin-top:3px;}
+  .tv-clock{font-size:clamp(24px,3.2vw,50px);font-weight:700;font-variant-numeric:tabular-nums;}
+  .tv-empty{font-size:clamp(20px,3vw,40px);color:var(--mut);text-align:center;padding:clamp(60px,12vw,160px) 20px;}
+  .tv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:clamp(14px,1.8vw,26px);}
+  .tv-card{border:1px solid var(--line);border-radius:14px;background:var(--band);
+    padding:clamp(16px,2vw,26px);position:relative;overflow:hidden;}
+  .tv-card.stale{border-color:var(--crit);border-width:2px;}
+  .tv-stale-badge{position:absolute;top:14px;right:14px;background:var(--crit);color:#fff;
+    font-size:clamp(9px,.9vw,12px);font-weight:800;padding:3px 9px;border-radius:9px;text-transform:uppercase;letter-spacing:.05em;}
+  .tv-code{font-size:clamp(20px,2.4vw,34px);font-weight:800;}
+  .tv-customer{font-size:clamp(11px,1.2vw,16px);color:var(--mut);margin-top:2px;}
+  .tv-pipeline{display:flex;align-items:center;gap:6px;margin:clamp(12px,1.6vw,20px) 0;}
+  .tv-stage{flex:1;text-align:center;padding:clamp(6px,.8vw,10px) 4px;border-radius:6px;
+    font-size:clamp(10px,1vw,14px);font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#fff;}
+  .tv-stage.pending{background:var(--mut);opacity:.45;}
+  .tv-stage.active{background:var(--blue);}
+  .tv-stage.complete{background:var(--good);}
+  .tv-arrow{color:var(--mut);font-size:clamp(12px,1.4vw,20px);}
+  .tv-reading{display:flex;align-items:baseline;gap:10px;margin-top:4px;}
+  .tv-value{font-size:clamp(32px,4.6vw,60px);font-weight:800;font-variant-numeric:tabular-nums;color:var(--ink);}
+  .tv-value.good{color:var(--good);}
+  .tv-value.bad{color:var(--crit);}
+  .tv-unit{font-size:clamp(12px,1.3vw,18px);color:var(--mut);font-weight:600;margin-left:4px;}
+  .tv-meta{font-size:clamp(10px,1vw,14px);color:var(--mut);margin-top:2px;}
+  .tv-dots{display:flex;justify-content:center;gap:9px;margin-top:clamp(16px,2.4vw,30px);}
+  .tv-dot{width:10px;height:10px;border-radius:50%;background:var(--line);}
+  .tv-dot.active{background:var(--accent);}
 
   @media print{
     header,nav,.no-print,.tabs{display:none !important;}
@@ -172,10 +216,12 @@ var STATE = {
   view: 'home',
   code: '',
   workOrder: null,
-  readings: [], thicknessChecks: [], notes: [], photos: [],
+  readings: [], thicknessChecks: [], notes: [], photos: [], materialUsage: [],
   section: 'Baseline',
   dashTimer: null,
-  dashOpenCode: null
+  dashOpenCode: null,
+  tvPage: 0,
+  tvPageTimer: null
 };
 
 /* ============================= API ============================= */
@@ -266,6 +312,7 @@ function pointCount(section){ return section === 'Coverline' ? COVERLINE_POINTS 
 
 /* ============================= NAV / RENDER ============================= */
 function go(view, opts){
+  leaveTVIfActive();
   STATE.view = view;
   if (opts && opts.code !== undefined) STATE.code = opts.code;
   if (opts && opts.section) STATE.section = opts.section;
@@ -282,6 +329,7 @@ function render(){
   else if (STATE.view === 'tagPrinted') app.innerHTML = viewTagPrinted();
   else if (STATE.view === 'operator') app.innerHTML = viewOperator();
   else if (STATE.view === 'dashboard') app.innerHTML = viewDashboard();
+  else if (STATE.view === 'tv') app.innerHTML = viewTV();
   bindView();
 }
 
@@ -341,9 +389,7 @@ function lookupCode(code){
   var box = E('homeResult');
   box.innerHTML = '<p class="muted">Looking up '+esc(code)+'&hellip;</p>';
   apiGet('getWorkOrder', {code: code}).then(function(data){
-    STATE.code = code; STATE.workOrder = data.workOrder;
-    STATE.readings = data.readings; STATE.thicknessChecks = data.thicknessChecks;
-    STATE.notes = data.notes; STATE.photos = data.photos;
+    STATE.code = code; applyWorkOrderData(data);
     box.innerHTML =
       '<div class="row"><span class="ok">Found:</span> <b>'+esc(code)+'</b> &mdash; '+esc(data.workOrder.Customer||'')+
       ' <span class="spacer"></span>' +
@@ -486,8 +532,7 @@ function bindController(isNew){
       STATE.code = isNew ? body.code : STATE.code;
       return apiGet('getWorkOrder', {code: STATE.code});
     }).then(function(data){
-      STATE.workOrder = data.workOrder; STATE.readings = data.readings;
-      STATE.thicknessChecks = data.thicknessChecks; STATE.notes = data.notes; STATE.photos = data.photos;
+      applyWorkOrderData(data);
       if (isNew) go('tagPrinted', {code: STATE.code}); else go('home');
     }).catch(function(err){ toast(err.message, true); E('saveWoBtn').disabled = false; });
   });
@@ -572,6 +617,7 @@ function viewOperator(){
   '</section>' +
 
   (sec !== 'Braidline' ? thicknessCheckCardHtml(sec) : '') +
+  (sec !== 'Braidline' ? materialUsageCardHtml(sec) : '') +
 
   '<section class="card">' +
     '<h2>Notes</h2>' +
@@ -683,6 +729,51 @@ function checksTableHtml(checks){
     }).join('') + '</tbody></table>';
 }
 
+var MATERIAL_SUGGESTIONS = ['Nylon 290 - Base', 'PP - Cover', 'PPMBUVYL - Yellow', 'HDPE', 'PA11', 'PA12'];
+
+function materialUsageCardHtml(sec){
+  var rows = STATE.materialUsage.filter(function(m){ return m.Section===sec; }).sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
+  return '<section class="card">' +
+    '<h2>Material usage</h2>' +
+    '<p class="muted" style="margin-top:0">Log each material load\'s start and end weight (e.g. resin box/gaylord change).</p>' +
+    '<div class="grid g4">' +
+      '<div class="fld"><label>Material</label><input id="matName" list="matSuggestions" placeholder="e.g. Nylon 290 - Base"></div>' +
+      '<div class="fld"><label>Lot / batch # (optional)</label><input id="matLot"></div>' +
+      '<div class="fld"><label>Operator</label><input id="matOperator" value="'+esc(getOperatorName())+'"></div>' +
+      '<div class="fld"><label>Time</label><input id="matTime" type="datetime-local" value="'+nowLocalInputValue()+'"></div>' +
+    '</div>' +
+    '<div class="grid g4" style="margin-top:8px">' +
+      '<div class="fld"><label>Start weight (lbs)</label><input id="matStart" type="number" step="0.1"></div>' +
+      '<div class="fld"><label>End weight (lbs)</label><input id="matEnd" type="number" step="0.1"></div>' +
+      '<div class="kpi"><b>Used</b><span id="matUsed">&mdash;</span></div>' +
+    '</div>' +
+    '<datalist id="matSuggestions">' + MATERIAL_SUGGESTIONS.map(function(m){ return '<option value="'+esc(m)+'">'; }).join('') + '</datalist>' +
+    '<div class="row" style="margin-top:8px"><button class="btn pri" id="submitMaterialBtn">Log material usage</button></div>' +
+    (rows.length ? materialSummaryHtml(rows) + materialTableHtml(rows) : '<p class="muted">No material usage logged yet.</p>') +
+  '</section>';
+}
+
+function materialSummaryHtml(rows){
+  var totals = {};
+  rows.forEach(function(m){
+    var key = m.Material || '(unspecified)';
+    if (m.UsedWeight !== '' && m.UsedWeight !== undefined) totals[key] = (totals[key]||0) + Number(m.UsedWeight);
+  });
+  var keys = Object.keys(totals);
+  if (!keys.length) return '';
+  return '<div class="kpis" style="margin-top:10px">' + keys.map(function(k){
+    return '<div class="kpi"><b>'+esc(k)+'</b><span>'+round4(totals[k])+'</span><i>lbs used</i></div>';
+  }).join('') + '</div>';
+}
+
+function materialTableHtml(rows){
+  return '<table style="margin-top:8px"><thead><tr><th class="l">Time</th><th class="l">Material</th><th>Lot #</th><th>Start</th><th>End</th><th>Used</th><th>Operator</th></tr></thead><tbody>' +
+    rows.map(function(m){
+      return '<tr><td class="l">'+esc(fmtTime(m.Timestamp))+'</td><td class="l">'+esc(m.Material)+'</td><td>'+esc(m.LotNumber)+'</td>' +
+        '<td class="num">'+esc(m.StartWeight)+'</td><td class="num">'+esc(m.EndWeight)+'</td><td class="num">'+esc(m.UsedWeight)+'</td><td>'+esc(m.Operator)+'</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+
 function notesListHtml(sec){
   var notes = STATE.notes.filter(function(n){ return n.Section===sec; }).sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
   if (!notes.length) return '<p class="muted">No notes yet.</p>';
@@ -712,11 +803,14 @@ function liveThicknessCalc(sec){
   E('tcOv').textContent = round4(Math.max.apply(null,pts) - Math.min.apply(null,pts)) + '"';
 }
 
+function applyWorkOrderData(data){
+  STATE.workOrder = data.workOrder; STATE.readings = data.readings;
+  STATE.thicknessChecks = data.thicknessChecks; STATE.notes = data.notes; STATE.photos = data.photos;
+  STATE.materialUsage = data.materialUsage || [];
+}
+
 function reloadWorkOrder(code){
-  return apiGet('getWorkOrder', {code: code}).then(function(data){
-    STATE.workOrder = data.workOrder; STATE.readings = data.readings;
-    STATE.thicknessChecks = data.thicknessChecks; STATE.notes = data.notes; STATE.photos = data.photos;
-  });
+  return apiGet('getWorkOrder', {code: code}).then(function(data){ applyWorkOrderData(data); });
 }
 
 function bindOperator(){
@@ -782,6 +876,28 @@ function bindOperator(){
         .then(function(){ render(); })
         .catch(function(err){ toast(err.message, true); E('submitCheckBtn').disabled = false; });
     });
+
+    var liveMatCalc = function(){
+      var s = num(E('matStart').value), en = num(E('matEnd').value);
+      E('matUsed').textContent = (s!==null && en!==null) ? round4(s-en) + ' lbs' : '—';
+    };
+    E('matStart').addEventListener('input', liveMatCalc);
+    E('matEnd').addEventListener('input', liveMatCalc);
+    E('submitMaterialBtn').addEventListener('click', function(){
+      var operator = E('matOperator').value.trim();
+      if (!operator){ toast('Operator name is required', true); return; }
+      setOperatorName(operator);
+      var material = E('matName').value.trim();
+      if (!material){ toast('Enter a material name', true); return; }
+      var ts = new Date(E('matTime').value).toISOString();
+      E('submitMaterialBtn').disabled = true;
+      apiPost('addMaterialUsage', {
+        code: STATE.code, section: sec, material: material, lotNumber: E('matLot').value.trim(),
+        startWeight: E('matStart').value, endWeight: E('matEnd').value, operator: operator, timestamp: ts
+      }).then(function(){ toast('Material usage logged'); return reloadWorkOrder(STATE.code); })
+        .then(function(){ render(); })
+        .catch(function(err){ toast(err.message, true); E('submitMaterialBtn').disabled = false; });
+    });
   }
 
   E('submitNoteBtn').addEventListener('click', function(){
@@ -817,7 +933,11 @@ function bindOperator(){
 
 /* ============================= DASHBOARD ============================= */
 function viewDashboard(){
-  return '<div id="dashRoot"><p class="muted">Loading&hellip;</p></div>';
+  return '<div class="row no-print" style="margin-bottom:10px">' +
+      '<span class="spacer"></span>' +
+      '<button class="btn pri" data-nav="tv">Open TV view</button>' +
+    '</div>' +
+    '<div id="dashRoot"><p class="muted">Loading&hellip;</p></div>';
 }
 
 function bindDashboard(){
@@ -828,6 +948,105 @@ function bindDashboard(){
 function loadDashboard(){
   apiGet('dashboard').then(function(d){ renderDashboard(d); })
     .catch(function(err){ E('dashRoot').innerHTML = '<p class="flag">Could not load dashboard: '+esc(err.message)+'</p>'; });
+}
+
+/* ---------- TV board (facility display) ---------- */
+var TV_PAGE_SIZE = 6;
+var tvClockTimer = null;
+
+function viewTV(){
+  return '<button class="btn sm tv-exit" data-nav="dashboard">Exit TV view</button>' +
+    '<div class="tv-shell" id="tvRoot"><p class="muted">Loading&hellip;</p></div>';
+}
+
+function bindTV(){
+  document.documentElement.setAttribute('data-theme', 'dark');
+  document.body.classList.add('tv-active');
+  STATE.tvPage = 0;
+  loadTVBoard();
+  STATE.dashTimer = setInterval(loadTVBoard, 20000);
+  STATE.tvPageTimer = setInterval(advanceTVPage, 8000);
+  startTVClock();
+}
+
+function leaveTVIfActive(){
+  if (STATE.view !== 'tv') return;
+  document.documentElement.removeAttribute('data-theme');
+  document.body.classList.remove('tv-active');
+  if (STATE.tvPageTimer){ clearInterval(STATE.tvPageTimer); STATE.tvPageTimer = null; }
+  stopTVClock();
+}
+
+function startTVClock(){
+  stopTVClock();
+  var tick = function(){ var el = E('tvClock'); if (el) el.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); };
+  tick();
+  tvClockTimer = setInterval(tick, 1000);
+}
+function stopTVClock(){ if (tvClockTimer){ clearInterval(tvClockTimer); tvClockTimer = null; } }
+
+function loadTVBoard(){
+  apiGet('dashboard').then(function(d){ renderTVBoard(d); })
+    .catch(function(err){
+      var r = E('tvRoot');
+      if (r) r.innerHTML = '<div class="tv-empty flag">Could not reach the server:<br>'+esc(err.message)+'</div>';
+    });
+}
+
+function advanceTVPage(){
+  if (!STATE.tvLastData) return;
+  var count = Math.max(1, Math.ceil(STATE.tvLastData.active.length / TV_PAGE_SIZE));
+  STATE.tvPage = (STATE.tvPage + 1) % count;
+  renderTVBoard(STATE.tvLastData);
+}
+
+function renderTVBoard(d){
+  var root = E('tvRoot');
+  if (!root) return;
+  STATE.tvLastData = d;
+  var active = d.active;
+  var pages = [];
+  for (var i = 0; i < active.length; i += TV_PAGE_SIZE) pages.push(active.slice(i, i + TV_PAGE_SIZE));
+  if (!pages.length) pages = [[]];
+  if (STATE.tvPage >= pages.length) STATE.tvPage = 0;
+  var pageItems = pages[STATE.tvPage];
+
+  var cardsHtml = pageItems.length ? pageItems.map(tvCardHtml).join('') : '<div class="tv-empty">No active production right now.</div>';
+
+  root.innerHTML =
+    '<div class="tv-header">' +
+      '<div><div class="tv-title">SRTP Production Floor</div>' +
+      '<div class="tv-sub">'+active.length+' active work order'+(active.length===1?'':'s')+'</div></div>' +
+      '<div class="tv-clock" id="tvClock">&nbsp;</div>' +
+    '</div>' +
+    '<div class="tv-grid">' + cardsHtml + '</div>' +
+    (pages.length > 1 ? '<div class="tv-dots">' + pages.map(function(_, i){ return '<span class="tv-dot'+(i===STATE.tvPage?' active':'')+'"></span>'; }).join('') + '</div>' : '');
+
+  var clockEl = E('tvClock');
+  if (clockEl) clockEl.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+function tvCardHtml(w){
+  var lr = w.lastReading;
+  var stale = lr && (Date.now() - new Date(lr.Timestamp).getTime()) > 75*60000;
+  var valueClass = lr ? (lr.InTol==='Y' ? 'good' : lr.InTol==='N' ? 'bad' : '') : '';
+  var names = ['Baseline','Braidline','Coverline'];
+  var statuses = [w.blStatus, w.brStatus, w.cvStatus];
+  var stagesHtml = names.map(function(name, i){
+    var st = statuses[i];
+    var cls = st==='Complete' ? 'complete' : st==='In progress' ? 'active' : 'pending';
+    return '<div class="tv-stage '+cls+'">'+name+'</div>' + (i < 2 ? '<div class="tv-arrow">&rarr;</div>' : '');
+  }).join('');
+  return '<div class="tv-card'+(stale?' stale':'')+'">' +
+    (stale ? '<div class="tv-stale-badge">Stale</div>' : '') +
+    '<div class="tv-code">'+esc(w.code)+'</div>' +
+    '<div class="tv-customer">'+esc(w.customer||'')+(w.productCode?' &middot; '+esc(w.productCode):'')+'</div>' +
+    '<div class="tv-pipeline">'+stagesHtml+'</div>' +
+    (lr ?
+      '<div class="tv-reading"><div class="tv-value '+valueClass+'">'+esc(lr.Value)+'<span class="tv-unit">" '+esc(lr.Type)+'</span></div></div>' +
+      '<div class="tv-meta">'+fmtRel(lr.Timestamp)+'</div>'
+      : '<div class="tv-meta">No readings yet</div>') +
+  '</div>';
 }
 
 function renderDashboard(d){
@@ -879,17 +1098,26 @@ function dashDetailHtml(data){
   var wo = data.workOrder;
   function odSeries(sec){ return data.readings.filter(function(r){ return r.Section===sec && r.Type==='OD'; }).sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); }); }
   function statsOf(vals){ if(!vals.length) return null; return {min:Math.min.apply(null,vals), max:Math.max.apply(null,vals), avg:round4(vals.reduce(function(a,b){return a+b;},0)/vals.length)}; }
+  function targetTol(prefix){
+    var t = wo[prefix+'_TargetOD'], tol = wo[prefix+'_ODTol'];
+    return (t!=='' && t!==undefined && tol!=='' && tol!==undefined) ? {target:Number(t), tol:Number(tol)} : null;
+  }
 
-  var sections = ['Baseline','Braidline','Coverline'];
-  var body = sections.map(function(sec){
+  var sections = [['Baseline','BL'], ['Braidline','BR'], ['Coverline','CV']];
+  var body = sections.map(function(pair){
+    var sec = pair[0], prefix = pair[1];
     var series = odSeries(sec);
     var vals = series.map(function(r){ return Number(r.Value); });
     var s = statsOf(vals);
-    return '<div style="margin-bottom:14px">' +
+    var tt = targetTol(prefix);
+    return '<div style="margin-bottom:20px">' +
       '<h3>'+sec+'</h3>' +
       (s ? '<div class="kpis"><div class="kpi"><b>OD readings</b><span>'+series.length+'</span></div>' +
         '<div class="kpi"><b>Min</b><span>'+s.min+'"</span></div><div class="kpi"><b>Max</b><span>'+s.max+'"</span></div>' +
-        '<div class="kpi"><b>Avg</b><span>'+s.avg+'"</span></div></div>' + sparklineSvg(vals) : '<p class="muted">No OD readings yet.</p>') +
+        '<div class="kpi"><b>Avg</b><span>'+s.avg+'"</span></div></div>' +
+        (tt ? '<div class="muted" style="font-size:10px;margin-bottom:4px">Shaded band = target '+tt.target+'" &plusmn; '+tt.tol+'" tolerance</div>' : '') +
+        odChartSvg(series, tt)
+        : '<p class="muted">No OD readings yet.</p>') +
     '</div>';
   }).join('');
 
@@ -902,18 +1130,60 @@ function dashDetailHtml(data){
   '</section>';
 }
 
-function sparklineSvg(vals){
-  if (vals.length < 2) return '';
-  var w=600,h=44,pad=4;
-  var min=Math.min.apply(null,vals), max=Math.max.apply(null,vals);
-  var range = (max-min) || 1;
-  var pts = vals.map(function(v,i){
-    var x = pad + i*(w-2*pad)/(vals.length-1);
-    var y = h-pad - ((v-min)/range)*(h-2*pad);
-    return x.toFixed(1)+','+y.toFixed(1);
-  }).join(' ');
-  return '<svg class="sparkline" viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none">' +
-    '<polyline points="'+pts+'" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>' +
+function odChartSvg(series, tt){
+  if (series.length < 2) return '<p class="muted">Need at least 2 readings to chart a trend.</p>';
+  var W = 640, H = 230, padL = 52, padR = 14, padT = 12, padB = 28;
+  var plotW = W - padL - padR, plotH = H - padT - padB;
+
+  var vals = series.map(function(r){ return Number(r.Value); });
+  var times = series.map(function(r){ return new Date(r.Timestamp).getTime(); });
+
+  var yMin = Math.min.apply(null, vals), yMax = Math.max.apply(null, vals);
+  if (tt){ yMin = Math.min(yMin, tt.target - tt.tol); yMax = Math.max(yMax, tt.target + tt.tol); }
+  if (yMin === yMax){ yMin -= 0.05; yMax += 0.05; }
+  var pad = (yMax - yMin) * 0.15;
+  yMin -= pad; yMax += pad;
+
+  var tMin = times[0], tMax = times[times.length - 1];
+  if (tMin === tMax) tMax = tMin + 1;
+
+  function xOf(t){ return padL + (t - tMin) / (tMax - tMin) * plotW; }
+  function yOf(v){ return padT + (1 - (v - yMin) / (yMax - yMin)) * plotH; }
+
+  var GRID_N = 4, gridLines = '', yLabels = '';
+  for (var i = 0; i <= GRID_N; i++){
+    var v = yMin + (yMax - yMin) * i / GRID_N;
+    var y = yOf(v);
+    gridLines += '<line x1="'+padL+'" y1="'+y.toFixed(1)+'" x2="'+(W-padR)+'" y2="'+y.toFixed(1)+'" class="chart-grid"/>';
+    yLabels += '<text x="'+(padL-6)+'" y="'+(y+3).toFixed(1)+'" text-anchor="end" class="chart-axis-label">'+v.toFixed(3)+'</text>';
+  }
+
+  var X_N = Math.min(4, series.length - 1) || 1, xTicks = '';
+  for (var j = 0; j <= X_N; j++){
+    var t = tMin + (tMax - tMin) * j / X_N;
+    var x = xOf(t);
+    var lbl = new Date(t).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+    xTicks += '<text x="'+x.toFixed(1)+'" y="'+(H-8)+'" text-anchor="middle" class="chart-axis-label">'+lbl+'</text>';
+  }
+
+  var band = '';
+  if (tt){
+    var yTop = yOf(tt.target + tt.tol), yBot = yOf(tt.target - tt.tol), yTarget = yOf(tt.target);
+    band = '<rect x="'+padL+'" y="'+yTop.toFixed(1)+'" width="'+plotW+'" height="'+(yBot-yTop).toFixed(1)+'" class="chart-band"/>' +
+      '<line x1="'+padL+'" y1="'+yTarget.toFixed(1)+'" x2="'+(W-padR)+'" y2="'+yTarget.toFixed(1)+'" class="chart-target-line"/>';
+  }
+
+  var pts = series.map(function(r){ return xOf(new Date(r.Timestamp).getTime()).toFixed(1) + ',' + yOf(Number(r.Value)).toFixed(1); }).join(' ');
+  var dots = series.map(function(r){
+    var cx = xOf(new Date(r.Timestamp).getTime()).toFixed(1), cy = yOf(Number(r.Value)).toFixed(1);
+    var cls = 'chart-dot' + (r.InTol === 'N' ? ' bad' : '');
+    return '<circle cx="'+cx+'" cy="'+cy+'" r="4" class="'+cls+'"><title>'+esc(r.Value)+'" &mdash; '+esc(fmtTime(r.Timestamp))+' ('+esc(r.Operator)+')</title></circle>';
+  }).join('');
+
+  return '<svg class="odchart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet">' +
+    gridLines + band +
+    '<polyline points="'+pts+'" fill="none" class="chart-line"/>' +
+    dots + yLabels + xTicks +
   '</svg>';
 }
 
@@ -963,6 +1233,7 @@ function bindView(){
   else if (STATE.view === 'tagPrinted') bindTagPrinted();
   else if (STATE.view === 'operator') bindOperator();
   else if (STATE.view === 'dashboard') bindDashboard();
+  else if (STATE.view === 'tv') bindTV();
 }
 
 document.addEventListener('click', function(ev){
@@ -986,6 +1257,7 @@ document.addEventListener('click', function(ev){
 });
 
 /* ============================= INIT ============================= */
+if (new URLSearchParams(location.search).get('tv')) STATE.view = 'tv';
 checkConnection();
 render();
 setInterval(checkConnection, 30000);
