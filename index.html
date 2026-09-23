@@ -161,7 +161,7 @@
 /* ============================= CONFIG ============================= */
 // Paste your deployed Apps Script Web App URL here (ends in /exec).
 // Can also be set per-browser from the gear-less Settings row on Home for testing.
-var DEFAULT_API_URL = 'PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE';
+var DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbxGOH5Ffoevl2LEawp6phYQS3S77C-57aWqyoyViidVgRs_DPvrWbZds1_OW2DZcEI7eQ/exec';
 var API_URL = localStorage.getItem('srtp_api_url') || DEFAULT_API_URL;
 
 var BASELINE_POINTS = 16;
@@ -365,6 +365,34 @@ function firstOpenSection(wo){
 }
 
 /* ============================= CONTROLLER ============================= */
+function processFieldsHtml(p, wo){
+  var P = p.toUpperCase();
+  var g = function(field){ return wo ? esc(wo[P+'_'+field]) : ''; };
+  return '' +
+    '<div class="fld" style="margin-top:10px"><label>Process reference (from recipe card)</label></div>' +
+    '<div class="grid g3">' +
+      '<div class="fld"><label>Chiller set temp</label><input id="f_'+p+'ChillerTemp" value="'+g('ChillerTemp')+'"></div>' +
+      '<div class="fld"><label>Vacuum level</label><input id="f_'+p+'VacuumLevel" value="'+g('VacuumLevel')+'"></div>' +
+      '<div class="fld"><label>Backer extruder RPM (ref)</label><input id="f_'+p+'BackerRPM" value="'+g('BackerRPM')+'"></div>' +
+    '</div>' +
+    '<div class="fld" style="margin-top:8px"><label>Backer extruder temp zones (°F) — Zone 1&ndash;5, Clamp</label></div>' +
+    '<div class="grid g6">' +
+      '<input id="f_'+p+'TZ1" placeholder="Z1" value="'+g('TZ1')+'">' +
+      '<input id="f_'+p+'TZ2" placeholder="Z2" value="'+g('TZ2')+'">' +
+      '<input id="f_'+p+'TZ3" placeholder="Z3" value="'+g('TZ3')+'">' +
+      '<input id="f_'+p+'TZ4" placeholder="Z4" value="'+g('TZ4')+'">' +
+      '<input id="f_'+p+'TZ5" placeholder="Z5" value="'+g('TZ5')+'">' +
+      '<input id="f_'+p+'TClamp" placeholder="Clamp" value="'+g('TClamp')+'">' +
+    '</div>' +
+    '<div class="fld" style="margin-top:8px"><label>Die temps (°F) — Body / Manifold / Retainer / Flange</label></div>' +
+    '<div class="grid g4">' +
+      '<input id="f_'+p+'DieBody" placeholder="Body" value="'+g('DieBody')+'">' +
+      '<input id="f_'+p+'DieManifold" placeholder="Manifold" value="'+g('DieManifold')+'">' +
+      '<input id="f_'+p+'DieRetainer" placeholder="Retainer" value="'+g('DieRetainer')+'">' +
+      '<input id="f_'+p+'DieFlange" placeholder="Flange" value="'+g('DieFlange')+'">' +
+    '</div>';
+}
+
 function viewController(isNew){
   var wo = isNew ? null : STATE.workOrder;
   var v = function(f){ return wo ? esc(wo[f]) : ''; };
@@ -388,16 +416,19 @@ function viewController(isNew){
       '<div class="fld"><label>Target wall thickness (in)</label><input id="f_blTargetWall" type="number" step="0.001" value="'+v('BL_TargetWall')+'"></div>' +
       '<div class="fld"><label>Target ID (in)</label><input id="f_blTargetID" type="number" step="0.001" value="'+v('BL_TargetID')+'"></div>' +
     '</div>' +
+    processFieldsHtml('bl', wo) +
     '<div class="fld" style="margin-top:8px"><label>Recipe / MDS reference notes</label><textarea id="f_blNotes">'+v('BL_Notes')+'</textarea></div>' +
   '</section>' +
 
   '<section class="card"><h2>Braidline — reference targets</h2>' +
     '<div class="grid g4">' +
-      '<div class="fld"><label>Number of longs (ends up)</label><input id="f_brLongs" type="number" step="1" value="'+v('BR_Longs')+'"></div>' +
-      '<div class="fld"><label>Target pitch (in)</label><input id="f_brTargetPitch" type="number" step="0.01" value="'+v('BR_TargetPitch')+'"></div>' +
-      '<div class="fld"><label>Pitch tolerance ± (in)</label><input id="f_brPitchTol" type="number" step="0.01" value="'+v('BR_PitchTol')+'"></div>' +
+      '<div class="fld"><label>Longs — number of carriers</label><input id="f_brLongsCount" type="number" step="1" value="'+v('BR_LongsCount')+'"></div>' +
+      '<div class="fld"><label>Longs — ends up</label><input id="f_brLongsEndsUp" type="number" step="1" value="'+v('BR_Longs')+'"></div>' +
+      '<div class="fld"><label>Xbraids — ends up</label><input id="f_brXbraidEndsUp" type="number" step="1" value="'+v('BR_XbraidEndsUp')+'"></div>' +
       '<div class="fld"><label>Target OD (in)</label><input id="f_brTargetOD" type="number" step="0.001" value="'+v('BR_TargetOD')+'"></div>' +
       '<div class="fld"><label>OD tolerance ± (in)</label><input id="f_brODTol" type="number" step="0.001" value="'+v('BR_ODTol')+'"></div>' +
+      '<div class="fld"><label>Target pitch (in) — cross braid</label><input id="f_brTargetPitch" type="number" step="0.01" value="'+v('BR_TargetPitch')+'"></div>' +
+      '<div class="fld"><label>Pitch tolerance ± (in)</label><input id="f_brPitchTol" type="number" step="0.01" value="'+v('BR_PitchTol')+'"></div>' +
     '</div>' +
     '<div class="fld" style="margin-top:8px"><label>Recipe reference notes</label><textarea id="f_brNotes">'+v('BR_Notes')+'</textarea></div>' +
   '</section>' +
@@ -409,6 +440,7 @@ function viewController(isNew){
       '<div class="fld"><label>Target wall thickness (in)</label><input id="f_cvTargetWall" type="number" step="0.001" value="'+v('CV_TargetWall')+'"></div>' +
       '<div class="fld"><label>Target ID (in)</label><input id="f_cvTargetID" type="number" step="0.001" value="'+v('CV_TargetID')+'"></div>' +
     '</div>' +
+    processFieldsHtml('cv', wo) +
     '<div class="fld" style="margin-top:8px"><label>Recipe / MDS reference notes</label><textarea id="f_cvNotes">'+v('CV_Notes')+'</textarea></div>' +
   '</section>' +
 
@@ -419,17 +451,25 @@ function viewController(isNew){
   '</div>';
 }
 
+function collectProcessFields(p, body){
+  ['ChillerTemp','VacuumLevel','BackerRPM','TZ1','TZ2','TZ3','TZ4','TZ5','TClamp','DieBody','DieManifold','DieRetainer','DieFlange']
+    .forEach(function(field){ var el = E('f_'+p+field); if (el) body[p+field] = el.value; });
+}
+
 function collectControllerForm(isNew){
   var body = {
     customer: E('f_customer').value.trim(), productCode: E('f_productCode').value.trim(),
     pipeSize: E('f_pipeSize').value.trim(), emailTo: E('f_emailTo').value.trim(),
     blTargetOD: E('f_blTargetOD').value, blODTol: E('f_blODTol').value,
     blTargetWall: E('f_blTargetWall').value, blTargetID: E('f_blTargetID').value, blNotes: E('f_blNotes').value,
-    brLongs: E('f_brLongs').value, brTargetPitch: E('f_brTargetPitch').value, brPitchTol: E('f_brPitchTol').value,
+    brLongsCount: E('f_brLongsCount').value, brLongsEndsUp: E('f_brLongsEndsUp').value, brXbraidEndsUp: E('f_brXbraidEndsUp').value,
+    brTargetPitch: E('f_brTargetPitch').value, brPitchTol: E('f_brPitchTol').value,
     brTargetOD: E('f_brTargetOD').value, brODTol: E('f_brODTol').value, brNotes: E('f_brNotes').value,
     cvTargetOD: E('f_cvTargetOD').value, cvODTol: E('f_cvODTol').value,
     cvTargetWall: E('f_cvTargetWall').value, cvTargetID: E('f_cvTargetID').value, cvNotes: E('f_cvNotes').value
   };
+  collectProcessFields('bl', body);
+  collectProcessFields('cv', body);
   if (isNew){ body.code = E('f_code').value.trim(); body.createdBy = E('f_createdBy').value.trim(); }
   return body;
 }
@@ -563,14 +603,14 @@ function referenceTargetsHtml(wo, sec){
       '<div class="kpi"><b>Target wall</b><span>'+fmtTol(wo.BL_TargetWall)+'</span></div>' +
       '<div class="kpi"><b>Target ID</b><span>'+fmtTol(wo.BL_TargetID)+'</span></div>' +
       '<div class="kpi"><b>16-pt check</b><span>Start / End</span></div>' +
-    '</div>' + (wo.BL_Notes ? '<p class="muted">'+esc(wo.BL_Notes)+'</p>' : '');
+    '</div>' + processRefHtml('BL', wo) + (wo.BL_Notes ? '<p class="muted">'+esc(wo.BL_Notes)+'</p>' : '');
   }
   if (sec==='Braidline'){
     return '<div class="grid g4">' +
-      '<div class="kpi"><b>Longs (ends up)</b><span>'+fmtTol(wo.BR_Longs)+'</span></div>' +
+      '<div class="kpi"><b>Longs</b><span>'+fmtTol(wo.BR_LongsCount)+' &times; '+fmtTol(wo.BR_Longs)+'</span><i>carriers &times; ends up</i></div>' +
+      '<div class="kpi"><b>Xbraids — ends up</b><span>'+fmtTol(wo.BR_XbraidEndsUp)+'</span></div>' +
       '<div class="kpi"><b>Target pitch</b><span>'+fmtTol(wo.BR_TargetPitch)+'</span><i>&plusmn; '+fmtTol(wo.BR_PitchTol)+'</i></div>' +
       '<div class="kpi"><b>Target OD</b><span>'+fmtTol(wo.BR_TargetOD)+'</span><i>&plusmn; '+fmtTol(wo.BR_ODTol)+'</i></div>' +
-      '<div class="kpi"><b>&nbsp;</b><span></span></div>' +
     '</div>' + (wo.BR_Notes ? '<p class="muted">'+esc(wo.BR_Notes)+'</p>' : '');
   }
   return '<div class="grid g4">' +
@@ -578,9 +618,22 @@ function referenceTargetsHtml(wo, sec){
     '<div class="kpi"><b>Target wall</b><span>'+fmtTol(wo.CV_TargetWall)+'</span></div>' +
     '<div class="kpi"><b>Target ID</b><span>'+fmtTol(wo.CV_TargetID)+'</span></div>' +
     '<div class="kpi"><b>12-pt check</b><span>Start / End</span></div>' +
-  '</div>' + (wo.CV_Notes ? '<p class="muted">'+esc(wo.CV_Notes)+'</p>' : '');
+  '</div>' + processRefHtml('CV', wo) + (wo.CV_Notes ? '<p class="muted">'+esc(wo.CV_Notes)+'</p>' : '');
 }
 function fmtTol(v){ return (v===''||v===undefined||v===null) ? '—' : v; }
+
+function processRefHtml(prefix, wo){
+  var parts = [];
+  if (wo[prefix+'_ChillerTemp']) parts.push('Chiller '+esc(wo[prefix+'_ChillerTemp']));
+  if (wo[prefix+'_VacuumLevel']) parts.push('Vacuum '+esc(wo[prefix+'_VacuumLevel']));
+  if (wo[prefix+'_BackerRPM']) parts.push('Backer RPM '+esc(wo[prefix+'_BackerRPM']));
+  var zones = ['TZ1','TZ2','TZ3','TZ4','TZ5','TClamp'].map(function(z){ return wo[prefix+'_'+z]; }).filter(function(x){ return x!==''&&x!==undefined; });
+  if (zones.length) parts.push('Zones '+zones.map(esc).join('/'));
+  var die = ['DieBody','DieManifold','DieRetainer','DieFlange'].map(function(z){ return wo[prefix+'_'+z]; }).filter(function(x){ return x!==''&&x!==undefined; });
+  if (die.length) parts.push('Die '+die.map(esc).join('/'));
+  if (!parts.length) return '';
+  return '<div class="muted" style="font-size:10px;margin-top:6px">Process ref &mdash; '+parts.join(' &middot; ')+'</div>';
+}
 
 function readingsTableHtml(sec){
   var rows = STATE.readings.filter(function(r){ return r.Section===sec; })
