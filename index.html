@@ -1118,7 +1118,7 @@ function problemReportTabHtml(){
 function problemReportCardHtml(p){
   var photos = STATE.photos.filter(function(ph){ return ph.ProblemReportId === p.RowId; });
   var photosHtml = photos.length ? '<div class="photolist" style="margin-top:6px">' + photos.map(function(ph){
-    return '<a class="photoitem" href="'+esc(ph.DriveUrl)+'" target="_blank" rel="noopener"><img class="thumb" src="'+esc(ph.DriveUrl)+'" onerror="this.style.display=\'none\'"><span>photo</span></a>';
+    return '<a class="photoitem" href="'+esc(ph.DriveUrl)+'" target="_blank" rel="noopener"><img class="thumb" loading="lazy" src="'+esc(photoThumbUrl(ph))+'" onerror="this.style.display=\'none\'"><span>photo</span></a>';
   }).join('') + '</div>' : '';
   var isOpen = p.Status === 'Open';
   return '<div class="problemcard'+(isOpen?' open':'')+'">' +
@@ -1182,21 +1182,29 @@ function bindProblemReportTab(){
 }
 
 function notesListHtml(sec){
-  var notes = STATE.notes.filter(function(n){ return n.Section===sec; }).sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
-  if (!notes.length) return '<p class="muted">No notes yet.</p>';
+  var all = STATE.notes.filter(function(n){ return n.Section===sec; }).sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
+  if (!all.length) return '<p class="muted">No notes yet.</p>';
+  var notes = all.slice(0,20);
   return '<table style="margin-top:8px"><thead><tr><th class="l" style="width:30%">Time / Operator</th><th class="l">Note</th></tr></thead><tbody>' +
     notes.map(function(n){ return '<tr><td class="l">'+esc(fmtTime(n.Timestamp))+'<br><span class="muted">'+esc(n.Operator)+'</span></td><td class="l">'+esc(n.Text)+'</td></tr>'; }).join('') +
-    '</tbody></table>';
+    '</tbody></table>' + (all.length>20 ? '<p class="muted" style="margin-top:4px">Showing the latest 20 of '+all.length+'.</p>' : '');
+}
+
+// Drive's file-view page (getUrl()) doesn't serve raw image bytes, so <img> needs the
+// thumbnail endpoint instead — built from the stored file id, kept working at any photo count.
+function photoThumbUrl(p){
+  return p.DriveFileId ? ('https://drive.google.com/thumbnail?id='+encodeURIComponent(p.DriveFileId)+'&sz=w300') : p.DriveUrl;
 }
 
 function photosListHtml(sec){
-  var photos = STATE.photos.filter(function(p){ return p.Section===sec; }).sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
-  if (!photos.length) return '<p class="muted">No photos yet.</p>';
+  var all = STATE.photos.filter(function(p){ return p.Section===sec; }).sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
+  if (!all.length) return '<p class="muted">No photos yet.</p>';
+  var photos = all.slice(0,20);
   return photos.map(function(p){
     return '<a class="photoitem" href="'+esc(p.DriveUrl)+'" target="_blank" rel="noopener">' +
-      '<img class="thumb" src="'+esc(p.DriveUrl)+'" onerror="this.style.display=\'none\'">' +
+      '<img class="thumb" loading="lazy" src="'+esc(photoThumbUrl(p))+'" onerror="this.style.display=\'none\'">' +
       '<span>'+esc(p.Caption||fmtTime(p.Timestamp))+'</span></a>';
-  }).join('');
+  }).join('') + (all.length>20 ? '<p class="muted" style="margin-top:4px;width:100%">Showing the latest 20 of '+all.length+'.</p>' : '');
 }
 
 var prodTickTimer = null;
@@ -1293,7 +1301,7 @@ function bindOperator(){
   if (cancelBtn) cancelBtn.addEventListener('click', function(){ E('completeForm').style.display = 'none'; E('completeRow').style.display = 'flex'; });
   var confirmBtn = E('confirmCompleteBtn');
   if (confirmBtn) confirmBtn.addEventListener('click', function(){
-    if (!confirm('Mark '+sec+' complete for reel '+STATE.pipeCode+'? This will email the report.')) return;
+    if (!confirm('Mark '+sec+' complete for reel '+STATE.pipeCode+'?')) return;
     confirmBtn.disabled = true;
     apiPost('setSectionStatus', {pipeCode: STATE.pipeCode, section: sec, status: 'Complete', actualLength: E('completeLength').value})
       .then(function(){ toast(sec+' marked complete'); return reloadPipe(STATE.pipeCode); })
