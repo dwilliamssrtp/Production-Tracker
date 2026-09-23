@@ -1,0 +1,941 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SRTP Production Tracker</title>
+<style>
+  :root{
+    --ink:#111; --mut:#555; --line:#c9c9c9; --hair:#e6e6e6;
+    --bg:#fff; --band:#f2f2f2; --field:#fff; --accent:#0b3d62;
+    --good:#0ca30c; --warn:#c98500; --crit:#d03b3b; --blue:#2a78d6;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{--ink:#e9e9e9;--mut:#a6a6a6;--line:#4a4a4a;--hair:#333;--bg:#141414;
+          --band:#1e1e1e;--field:#0d0d0d;--accent:#7fb6dd;
+          --good:#0ca30c;--warn:#c98500;--crit:#e66767;--blue:#3987e5;}
+  }
+  :root[data-theme="dark"]{--ink:#e9e9e9;--mut:#a6a6a6;--line:#4a4a4a;--hair:#333;--bg:#141414;
+          --band:#1e1e1e;--field:#0d0d0d;--accent:#7fb6dd;
+          --good:#0ca30c;--warn:#c98500;--crit:#e66767;--blue:#3987e5;}
+  :root[data-theme="light"]{--ink:#111;--mut:#555;--line:#c9c9c9;--hair:#e6e6e6;--bg:#fff;
+          --band:#f2f2f2;--field:#fff;--accent:#0b3d62;
+          --good:#0ca30c;--warn:#c98500;--crit:#d03b3b;--blue:#2a78d6;}
+
+  *{box-sizing:border-box;}
+  body{background:var(--bg);color:var(--ink);
+    font:13px/1.4 "Segoe UI",Arial,Helvetica,sans-serif;margin:0;}
+  h1{font-size:16px;margin:0;letter-spacing:.02em;}
+  h2{font-size:11px;margin:0 0 7px;text-transform:uppercase;letter-spacing:.08em;
+     color:var(--accent);border-bottom:1px solid var(--line);padding-bottom:3px;}
+  h3{font-size:13px;margin:0 0 4px;}
+  a{color:var(--accent);}
+  header{display:flex;align-items:center;gap:10px;padding:10px 14px;
+    border-bottom:2px solid var(--ink);background:var(--band);flex-wrap:wrap;}
+  header .sub{font-size:10px;color:var(--mut);}
+  nav{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap;}
+  nav button{font:600 10px/1 "Segoe UI",Arial,sans-serif;text-transform:uppercase;
+    letter-spacing:.05em;color:var(--ink);background:var(--field);
+    border:1px solid var(--line);border-radius:3px;padding:7px 10px;cursor:pointer;}
+  nav button.active{border-color:var(--accent);color:var(--accent);}
+  #status{font-size:9.5px;padding:2px 8px;border-radius:9px;white-space:nowrap;}
+  #status.ok{color:var(--good);}
+  #status.bad{color:var(--crit);}
+  main{max-width:920px;margin:0 auto;padding:14px 16px 60px;}
+
+  section.card{border:1px solid var(--line);border-radius:5px;padding:12px 14px;margin-bottom:14px;background:var(--field);}
+  .grid{display:grid;gap:8px 12px;}
+  .g2{grid-template-columns:1fr 1fr;}
+  .g3{grid-template-columns:repeat(3,1fr);}
+  .g4{grid-template-columns:repeat(4,1fr);}
+  .g6{grid-template-columns:repeat(6,1fr);}
+  .fld{display:flex;flex-direction:column;gap:3px;}
+  .fld label{font-size:9px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;}
+  input,select,textarea{font:600 12.5px/1.2 "Segoe UI",Arial,sans-serif;
+    font-variant-numeric:tabular-nums;color:var(--ink);background:var(--bg);
+    border:1px solid var(--line);border-radius:3px;padding:6px 7px;width:100%;}
+  textarea{font-weight:400;min-height:56px;resize:vertical;}
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px;}
+  input::placeholder{color:var(--mut);font-weight:400;}
+
+  .btn{font:600 10.5px/1 "Segoe UI",Arial,sans-serif;text-transform:uppercase;
+    letter-spacing:.05em;color:var(--ink);background:var(--field);
+    border:1px solid var(--line);border-radius:4px;padding:9px 14px;cursor:pointer;}
+  .btn:hover{border-color:var(--accent);color:var(--accent);}
+  .btn.pri{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .btn.pri:hover{opacity:.9;color:#fff;}
+  .btn.sm{padding:5px 9px;font-size:9px;}
+  .btn.danger{border-color:var(--crit);color:var(--crit);}
+  .btn:disabled{opacity:.45;cursor:not-allowed;}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .spacer{flex:1;}
+
+  table{width:100%;border-collapse:collapse;font-size:11px;}
+  th,td{border:1px solid var(--hair);padding:4px 6px;text-align:center;}
+  th{background:var(--band);font-weight:600;font-size:9px;text-transform:uppercase;
+     letter-spacing:.04em;color:var(--mut);}
+  td.l,th.l{text-align:left;}
+  tbody tr:nth-child(even) td{background:color-mix(in srgb,var(--band) 45%,transparent);}
+  .num{font-variant-numeric:tabular-nums;}
+
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px;}
+  .kpi{border:1px solid var(--line);border-left:3px solid var(--accent);padding:6px 8px;background:var(--band);}
+  .kpi b{display:block;font-size:8px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;}
+  .kpi span{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums;display:block;}
+  .kpi i{font-style:normal;font-size:8.5px;color:var(--mut);}
+
+  .pill{display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.04em;padding:2px 7px;border-radius:9px;color:#fff;}
+  .pill.notstarted{background:var(--mut);}
+  .pill.inprogress{background:var(--blue);}
+  .pill.complete{background:var(--good);}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle;}
+  .dot.good{background:var(--good);}
+  .dot.bad{background:var(--crit);}
+  .dot.none{background:var(--line);}
+  .flag{color:var(--crit);font-weight:700;}
+  .ok{color:var(--good);font-weight:700;}
+  .muted{color:var(--mut);}
+
+  .tabs{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap;}
+  .tabs button{font:600 10.5px/1 "Segoe UI",Arial,sans-serif;text-transform:uppercase;
+    letter-spacing:.05em;padding:9px 14px;border:1px solid var(--line);border-bottom:none;
+    background:var(--band);color:var(--mut);cursor:pointer;border-radius:5px 5px 0 0;}
+  .tabs button.active{background:var(--field);color:var(--accent);border-color:var(--accent);}
+
+  .clockgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;}
+  .clockgrid .fld label{font-size:8px;}
+  .thumb{width:64px;height:64px;object-fit:cover;border:1px solid var(--line);border-radius:4px;}
+  .photolist{display:flex;flex-wrap:wrap;gap:8px;}
+  .photoitem{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:9px;color:var(--mut);width:70px;text-align:center;}
+
+  #scanOverlay{position:fixed;inset:0;background:#000;display:none;z-index:50;flex-direction:column;}
+  #scanOverlay video{flex:1;width:100%;object-fit:cover;}
+  #scanOverlay .sctl{padding:10px;display:flex;justify-content:center;gap:10px;background:#000;}
+
+  .qrbox{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px;}
+  .qrbox svg{width:200px;height:200px;background:#fff;padding:8px;border-radius:6px;}
+  .tagmeta{text-align:center;font-size:11px;}
+
+  .sparkline{width:100%;height:44px;}
+
+  @media print{
+    header,nav,.no-print,.tabs{display:none !important;}
+    body *{visibility:hidden;}
+    #printTag,#printTag *{visibility:visible;}
+    #printTag{position:absolute;top:0;left:0;}
+  }
+  @media (max-width:640px){
+    .g2,.g3,.g4,.g6,.kpis{grid-template-columns:repeat(2,1fr);}
+    .clockgrid{grid-template-columns:repeat(2,1fr);}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>SRTP Production Tracker</h1>
+    <div class="sub">Baseline &middot; Braidline &middot; Coverline</div>
+  </div>
+  <span id="status">checking&hellip;</span>
+  <nav>
+    <button data-nav="home">Home</button>
+    <button data-nav="dashboard">Dashboard</button>
+  </nav>
+</header>
+
+<main id="app"></main>
+
+<div id="scanOverlay">
+  <video id="scanVideo" playsinline autoplay muted></video>
+  <div class="sctl"><button class="btn" id="scanCancel">Cancel</button></div>
+</div>
+<canvas id="scanCanvas" style="display:none"></canvas>
+
+<div id="printTag"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script>
+/* ============================= CONFIG ============================= */
+// Paste your deployed Apps Script Web App URL here (ends in /exec).
+// Can also be set per-browser from the gear-less Settings row on Home for testing.
+var DEFAULT_API_URL = 'PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE';
+var API_URL = localStorage.getItem('srtp_api_url') || DEFAULT_API_URL;
+
+var BASELINE_POINTS = 16;
+var COVERLINE_POINTS = 12;
+
+/* ============================= STATE ============================= */
+var STATE = {
+  view: 'home',
+  code: '',
+  workOrder: null,
+  readings: [], thicknessChecks: [], notes: [], photos: [],
+  section: 'Baseline',
+  dashTimer: null,
+  dashOpenCode: null
+};
+
+/* ============================= API ============================= */
+function apiGet(action, params){
+  params = params || {};
+  var qs = Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
+  var url = API_URL + '?action=' + encodeURIComponent(action) + (qs ? '&' + qs : '');
+  return fetch(url).then(function(r){ return r.json(); }).then(function(j){
+    if (!j.ok) throw new Error(j.error || 'Request failed');
+    return j.data;
+  });
+}
+function apiPost(action, body){
+  var payload = Object.assign({action: action}, body || {});
+  return fetch(API_URL, {
+    method: 'POST',
+    headers: {'Content-Type': 'text/plain;charset=utf-8'},
+    body: JSON.stringify(payload)
+  }).then(function(r){ return r.json(); }).then(function(j){
+    if (!j.ok) throw new Error(j.error || 'Request failed');
+    return j.data;
+  });
+}
+
+function checkConnection(){
+  var el = document.getElementById('status');
+  if (!API_URL || API_URL.indexOf('PASTE_YOUR') === 0){
+    el.textContent = 'API not configured';
+    el.className = 'bad';
+    return;
+  }
+  apiGet('ping').then(function(){
+    el.textContent = 'Connected';
+    el.className = 'ok';
+  }).catch(function(){
+    el.textContent = 'Offline / unreachable';
+    el.className = 'bad';
+  });
+}
+
+/* ============================= UTIL ============================= */
+function E(id){ return document.getElementById(id); }
+function esc(s){ return String(s===undefined||s===null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function qs(sel, root){ return (root||document).querySelector(sel); }
+function qsa(sel, root){ return Array.prototype.slice.call((root||document).querySelectorAll(sel)); }
+function nowLocalInputValue(){
+  var d = new Date(), pad = function(n){ return String(n).padStart(2,'0'); };
+  return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
+}
+function fmtTime(iso){ if(!iso) return '—'; var d=new Date(iso); return isNaN(d) ? iso : d.toLocaleString(); }
+function fmtRel(iso){
+  if(!iso) return '—';
+  var mins = Math.round((Date.now() - new Date(iso).getTime())/60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + ' min ago';
+  var hrs = Math.floor(mins/60);
+  if (hrs < 24) return hrs + 'h ' + (mins%60) + 'm ago';
+  return Math.floor(hrs/24) + 'd ago';
+}
+function num(v){ var n = parseFloat(v); return isFinite(n) ? n : null; }
+function round4(n){ return Math.round(n*10000)/10000; }
+function toast(msg, isErr){
+  var t = E('toast');
+  if (!t){ t = document.createElement('div'); t.id='toast';
+    t.style.cssText='position:fixed;bottom:16px;left:50%;transform:translateX(-50%);'+
+      'background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:5px;font-size:12px;z-index:99;max-width:90vw;';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.background = isErr ? 'var(--crit)' : 'var(--ink)';
+  t.style.color = isErr ? '#fff' : 'var(--bg)';
+  t.style.display = 'block';
+  clearTimeout(t._h);
+  t._h = setTimeout(function(){ t.style.display='none'; }, 3500);
+}
+function getOperatorName(){ return localStorage.getItem('srtp_operator_name') || ''; }
+function setOperatorName(v){ localStorage.setItem('srtp_operator_name', v || ''); }
+
+/* clock / angle labels */
+function pointLabel(section, i){
+  if (section === 'Coverline'){
+    var clock = [12,1,2,3,4,5,6,7,8,9,10,11];
+    return clock[i] + " o'clock";
+  }
+  return Math.round(i * (360/BASELINE_POINTS) * 10)/10 + '°';
+}
+function pointCount(section){ return section === 'Coverline' ? COVERLINE_POINTS : BASELINE_POINTS; }
+
+/* ============================= NAV / RENDER ============================= */
+function go(view, opts){
+  STATE.view = view;
+  if (opts && opts.code !== undefined) STATE.code = opts.code;
+  if (opts && opts.section) STATE.section = opts.section;
+  if (STATE.dashTimer){ clearInterval(STATE.dashTimer); STATE.dashTimer = null; }
+  render();
+}
+
+function render(){
+  qsa('nav button').forEach(function(b){ b.classList.toggle('active', b.dataset.nav === (STATE.view==='dashboard'?'dashboard':'home')); });
+  var app = E('app');
+  if (STATE.view === 'home') app.innerHTML = viewHome();
+  else if (STATE.view === 'controller') app.innerHTML = viewController(false);
+  else if (STATE.view === 'controllerNew') app.innerHTML = viewController(true);
+  else if (STATE.view === 'tagPrinted') app.innerHTML = viewTagPrinted();
+  else if (STATE.view === 'operator') app.innerHTML = viewOperator();
+  else if (STATE.view === 'dashboard') app.innerHTML = viewDashboard();
+  bindView();
+}
+
+/* ============================= HOME ============================= */
+function viewHome(){
+  var urlCode = new URLSearchParams(location.search).get('code') || '';
+  return '' +
+  '<section class="card">' +
+    '<h2>Open a work order</h2>' +
+    '<div class="row">' +
+      '<div class="fld" style="flex:1;min-width:180px"><label>Work order / production code</label>' +
+        '<input id="codeInput" placeholder="e.g. BL20260128" value="'+esc(urlCode)+'"></div>' +
+      '<button class="btn" id="scanBtn" style="align-self:flex-end">Scan QR</button>' +
+      '<button class="btn pri" id="goBtn" style="align-self:flex-end">Go</button>' +
+    '</div>' +
+    '<div id="homeResult" style="margin-top:10px"></div>' +
+  '</section>' +
+  '<section class="card">' +
+    '<h2>New work order</h2>' +
+    '<p class="muted" style="margin-top:0">Controller: create a work order with reference targets from the MDS and recipe cards, then print the scannable tag.</p>' +
+    '<button class="btn pri" id="newWoBtn">+ New work order</button>' +
+  '</section>' +
+  '<section class="card no-print">' +
+    '<h2>Settings</h2>' +
+    '<div class="row">' +
+      '<div class="fld" style="flex:1"><label>API URL (Apps Script web app)</label>' +
+        '<input id="apiUrlInput" value="'+esc(API_URL==DEFAULT_API_URL?'':API_URL)+'" placeholder="'+esc(DEFAULT_API_URL)+'"></div>' +
+      '<button class="btn sm" id="saveApiBtn" style="align-self:flex-end">Save</button>' +
+    '</div>' +
+    '<div class="row" style="margin-top:8px">' +
+      '<div class="fld" style="flex:1"><label>Your name (used on entries)</label>' +
+        '<input id="opNameInput" value="'+esc(getOperatorName())+'" placeholder="First L."></div>' +
+      '<button class="btn sm" id="saveNameBtn" style="align-self:flex-end">Save</button>' +
+    '</div>' +
+  '</section>';
+}
+
+function bindHome(){
+  E('scanBtn').addEventListener('click', function(){ startScan(function(code){ E('codeInput').value = code; lookupCode(code); }); });
+  E('goBtn').addEventListener('click', function(){ lookupCode(E('codeInput').value.trim()); });
+  E('codeInput').addEventListener('keydown', function(ev){ if (ev.key==='Enter') lookupCode(E('codeInput').value.trim()); });
+  E('newWoBtn').addEventListener('click', function(){ go('controllerNew', {code:''}); });
+  E('saveApiBtn').addEventListener('click', function(){
+    var v = E('apiUrlInput').value.trim();
+    if (v){ localStorage.setItem('srtp_api_url', v); API_URL = v; } else { localStorage.removeItem('srtp_api_url'); API_URL = DEFAULT_API_URL; }
+    toast('API URL saved'); checkConnection();
+  });
+  E('saveNameBtn').addEventListener('click', function(){ setOperatorName(E('opNameInput').value.trim()); toast('Name saved'); });
+
+  var urlCode = new URLSearchParams(location.search).get('code');
+  if (urlCode) lookupCode(urlCode);
+}
+
+function lookupCode(code){
+  code = (code||'').trim();
+  if (!code){ toast('Enter a work order code', true); return; }
+  var box = E('homeResult');
+  box.innerHTML = '<p class="muted">Looking up '+esc(code)+'&hellip;</p>';
+  apiGet('getWorkOrder', {code: code}).then(function(data){
+    STATE.code = code; STATE.workOrder = data.workOrder;
+    STATE.readings = data.readings; STATE.thicknessChecks = data.thicknessChecks;
+    STATE.notes = data.notes; STATE.photos = data.photos;
+    box.innerHTML =
+      '<div class="row"><span class="ok">Found:</span> <b>'+esc(code)+'</b> &mdash; '+esc(data.workOrder.Customer||'')+
+      ' <span class="spacer"></span>' +
+      '<button class="btn" id="editWoBtn">Edit targets</button>' +
+      '<button class="btn pri" id="openOpBtn">Log measurements</button></div>';
+    E('editWoBtn').addEventListener('click', function(){ go('controller', {code: code}); });
+    E('openOpBtn').addEventListener('click', function(){ go('operator', {code: code, section: firstOpenSection(data.workOrder)}); });
+  }).catch(function(err){
+    box.innerHTML = '<p class="flag">Not found.</p><button class="btn pri" id="createHereBtn">Create work order '+esc(code)+'</button>';
+    var b = E('createHereBtn');
+    if (b) b.addEventListener('click', function(){ go('controllerNew', {code: code}); });
+  });
+}
+
+function firstOpenSection(wo){
+  if (wo.BL_Status !== 'Complete') return 'Baseline';
+  if (wo.BR_Status !== 'Complete') return 'Braidline';
+  return 'Coverline';
+}
+
+/* ============================= CONTROLLER ============================= */
+function viewController(isNew){
+  var wo = isNew ? null : STATE.workOrder;
+  var v = function(f){ return wo ? esc(wo[f]) : ''; };
+  return '' +
+  '<section class="card">' +
+    '<div class="row"><h2 style="border:none;margin:0">'+(isNew?'New work order':'Edit work order — '+esc(STATE.code))+'</h2></div>' +
+    '<div class="grid g2" style="margin-top:8px">' +
+      (isNew ? '<div class="fld"><label>Work order / production code</label><input id="f_code" value="'+esc(STATE.code)+'" placeholder="e.g. BL20260128"></div>' : '') +
+      '<div class="fld"><label>Customer</label><input id="f_customer" value="'+v('Customer')+'"></div>' +
+      '<div class="fld"><label>Product code</label><input id="f_productCode" value="'+v('ProductCode')+'" placeholder="e.g. LP1050 / BT1280LPA"></div>' +
+      '<div class="fld"><label>Pipe size</label><input id="f_pipeSize" value="'+v('PipeSize')+'" placeholder="e.g. 1.5&quot; nominal"></div>' +
+      '<div class="fld"><label>Controller / created by</label><input id="f_createdBy" value="'+(isNew? esc(getOperatorName()) : v('CreatedBy'))+'"></div>' +
+      '<div class="fld"><label>Report email(s)</label><input id="f_emailTo" value="'+(isNew? 'dwilliams@specialtyrtp.com' : v('EmailTo'))+'" placeholder="comma-separated"></div>' +
+    '</div>' +
+  '</section>' +
+
+  '<section class="card"><h2>Baseline — reference targets</h2>' +
+    '<div class="grid g4">' +
+      '<div class="fld"><label>Target OD (in)</label><input id="f_blTargetOD" type="number" step="0.001" value="'+v('BL_TargetOD')+'"></div>' +
+      '<div class="fld"><label>OD tolerance ± (in)</label><input id="f_blODTol" type="number" step="0.001" value="'+v('BL_ODTol')+'"></div>' +
+      '<div class="fld"><label>Target wall thickness (in)</label><input id="f_blTargetWall" type="number" step="0.001" value="'+v('BL_TargetWall')+'"></div>' +
+      '<div class="fld"><label>Target ID (in)</label><input id="f_blTargetID" type="number" step="0.001" value="'+v('BL_TargetID')+'"></div>' +
+    '</div>' +
+    '<div class="fld" style="margin-top:8px"><label>Recipe / MDS reference notes</label><textarea id="f_blNotes">'+v('BL_Notes')+'</textarea></div>' +
+  '</section>' +
+
+  '<section class="card"><h2>Braidline — reference targets</h2>' +
+    '<div class="grid g4">' +
+      '<div class="fld"><label>Number of longs (ends up)</label><input id="f_brLongs" type="number" step="1" value="'+v('BR_Longs')+'"></div>' +
+      '<div class="fld"><label>Target pitch (in)</label><input id="f_brTargetPitch" type="number" step="0.01" value="'+v('BR_TargetPitch')+'"></div>' +
+      '<div class="fld"><label>Pitch tolerance ± (in)</label><input id="f_brPitchTol" type="number" step="0.01" value="'+v('BR_PitchTol')+'"></div>' +
+      '<div class="fld"><label>Target OD (in)</label><input id="f_brTargetOD" type="number" step="0.001" value="'+v('BR_TargetOD')+'"></div>' +
+      '<div class="fld"><label>OD tolerance ± (in)</label><input id="f_brODTol" type="number" step="0.001" value="'+v('BR_ODTol')+'"></div>' +
+    '</div>' +
+    '<div class="fld" style="margin-top:8px"><label>Recipe reference notes</label><textarea id="f_brNotes">'+v('BR_Notes')+'</textarea></div>' +
+  '</section>' +
+
+  '<section class="card"><h2>Coverline — reference targets</h2>' +
+    '<div class="grid g4">' +
+      '<div class="fld"><label>Target OD (in)</label><input id="f_cvTargetOD" type="number" step="0.001" value="'+v('CV_TargetOD')+'"></div>' +
+      '<div class="fld"><label>OD tolerance ± (in)</label><input id="f_cvODTol" type="number" step="0.001" value="'+v('CV_ODTol')+'"></div>' +
+      '<div class="fld"><label>Target wall thickness (in)</label><input id="f_cvTargetWall" type="number" step="0.001" value="'+v('CV_TargetWall')+'"></div>' +
+      '<div class="fld"><label>Target ID (in)</label><input id="f_cvTargetID" type="number" step="0.001" value="'+v('CV_TargetID')+'"></div>' +
+    '</div>' +
+    '<div class="fld" style="margin-top:8px"><label>Recipe / MDS reference notes</label><textarea id="f_cvNotes">'+v('CV_Notes')+'</textarea></div>' +
+  '</section>' +
+
+  '<div class="row">' +
+    '<button class="btn" id="cancelBtn">Cancel</button>' +
+    '<span class="spacer"></span>' +
+    '<button class="btn pri" id="saveWoBtn">'+(isNew?'Create work order':'Save changes')+'</button>' +
+  '</div>';
+}
+
+function collectControllerForm(isNew){
+  var body = {
+    customer: E('f_customer').value.trim(), productCode: E('f_productCode').value.trim(),
+    pipeSize: E('f_pipeSize').value.trim(), emailTo: E('f_emailTo').value.trim(),
+    blTargetOD: E('f_blTargetOD').value, blODTol: E('f_blODTol').value,
+    blTargetWall: E('f_blTargetWall').value, blTargetID: E('f_blTargetID').value, blNotes: E('f_blNotes').value,
+    brLongs: E('f_brLongs').value, brTargetPitch: E('f_brTargetPitch').value, brPitchTol: E('f_brPitchTol').value,
+    brTargetOD: E('f_brTargetOD').value, brODTol: E('f_brODTol').value, brNotes: E('f_brNotes').value,
+    cvTargetOD: E('f_cvTargetOD').value, cvODTol: E('f_cvODTol').value,
+    cvTargetWall: E('f_cvTargetWall').value, cvTargetID: E('f_cvTargetID').value, cvNotes: E('f_cvNotes').value
+  };
+  if (isNew){ body.code = E('f_code').value.trim(); body.createdBy = E('f_createdBy').value.trim(); }
+  return body;
+}
+
+function bindController(isNew){
+  E('cancelBtn').addEventListener('click', function(){ go('home'); });
+  E('saveWoBtn').addEventListener('click', function(){
+    var body = collectControllerForm(isNew);
+    if (isNew && !body.code){ toast('Work order code is required', true); return; }
+    var call = isNew ? apiPost('createWorkOrder', body) : apiPost('updateWorkOrder', Object.assign({code: STATE.code}, body));
+    E('saveWoBtn').disabled = true;
+    call.then(function(res){
+      toast(isNew ? 'Work order created' : 'Saved');
+      STATE.code = isNew ? body.code : STATE.code;
+      return apiGet('getWorkOrder', {code: STATE.code});
+    }).then(function(data){
+      STATE.workOrder = data.workOrder; STATE.readings = data.readings;
+      STATE.thicknessChecks = data.thicknessChecks; STATE.notes = data.notes; STATE.photos = data.photos;
+      if (isNew) go('tagPrinted', {code: STATE.code}); else go('home');
+    }).catch(function(err){ toast(err.message, true); E('saveWoBtn').disabled = false; });
+  });
+}
+
+/* ============================= PRINTABLE TAG ============================= */
+function viewTagPrinted(){
+  var wo = STATE.workOrder;
+  var tagUrl = location.origin + location.pathname + '?code=' + encodeURIComponent(STATE.code);
+  return '' +
+  '<section class="card">' +
+    '<h2>Work order created</h2>' +
+    '<div class="qrbox" id="tagQr"></div>' +
+    '<div class="tagmeta">' +
+      '<div style="font-size:18px;font-weight:700">'+esc(STATE.code)+'</div>' +
+      '<div class="muted">'+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+' &middot; '+esc(wo.PipeSize||'')+'</div>' +
+    '</div>' +
+    '<div class="row" style="justify-content:center;margin-top:10px">' +
+      '<button class="btn" id="printBtn">Print tag</button>' +
+      '<button class="btn pri" id="startOpBtn">Start Baseline entry</button>' +
+      '<button class="btn" id="homeAfterBtn">Home</button>' +
+    '</div>' +
+  '</section>';
+}
+
+function bindTagPrinted(){
+  var tagUrl = location.origin + location.pathname + '?code=' + encodeURIComponent(STATE.code);
+  var qr = qrcode(0, 'M'); qr.addData(tagUrl); qr.make();
+  E('tagQr').innerHTML = qr.createSvgTag({cellSize:5, margin:4});
+  var printTag = E('printTag');
+  printTag.innerHTML = '<div style="font-family:Segoe UI,Arial,sans-serif;padding:24px;text-align:center;max-width:3in">' +
+    qr.createSvgTag({cellSize:6, margin:4}) +
+    '<div style="font-size:20px;font-weight:700;margin-top:8px">'+esc(STATE.code)+'</div>' +
+    '<div style="font-size:12px;color:#555">'+esc(STATE.workOrder.Customer||'')+'</div>' +
+    '<div style="font-size:12px;color:#555">'+esc(STATE.workOrder.ProductCode||'')+' &middot; '+esc(STATE.workOrder.PipeSize||'')+'</div>' +
+  '</div>';
+  E('printBtn').addEventListener('click', function(){ window.print(); });
+  E('startOpBtn').addEventListener('click', function(){ go('operator', {code: STATE.code, section: 'Baseline'}); });
+  E('homeAfterBtn').addEventListener('click', function(){ go('home'); });
+}
+
+/* ============================= OPERATOR ============================= */
+function viewOperator(){
+  var wo = STATE.workOrder, sec = STATE.section;
+  var prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
+  var status = wo[prefix+'_Status'];
+
+  return '' +
+  '<div class="row" style="margin-bottom:8px">' +
+    '<div><b>'+esc(STATE.code)+'</b> <span class="muted">'+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+'</span></div>' +
+    '<span class="spacer"></span>' +
+    '<button class="btn sm" id="emailNowBtn">Email report now</button>' +
+    '<button class="btn sm" id="backHomeBtn">Home</button>' +
+  '</div>' +
+  '<div class="tabs">' +
+    ['Baseline','Braidline','Coverline'].map(function(s){
+      var st = wo[(s==='Baseline'?'BL':s==='Braidline'?'BR':'CV')+'_Status'];
+      return '<button data-sec="'+s+'" class="'+(s===sec?'active':'')+'">'+s+' '+pillHtml(st)+'</button>';
+    }).join('') +
+  '</div>' +
+
+  '<section class="card">' +
+    '<h2>Reference targets</h2>' +
+    referenceTargetsHtml(wo, sec) +
+    '<div class="row" style="margin-top:10px">' +
+      '<span class="muted">Section status: '+pillHtml(status)+'</span>' +
+      '<span class="spacer"></span>' +
+      (status!=='Complete' ? '<button class="btn sm" id="completeSecBtn">Mark '+sec+' complete</button>' : '<span class="ok">Completed '+fmtTime(wo[prefix+'_CompletedAt'])+'</span>') +
+    '</div>' +
+  '</section>' +
+
+  '<section class="card">' +
+    '<h2>Hourly reading</h2>' +
+    '<div class="grid g4">' +
+      '<div class="fld"><label>Operator</label><input id="opName" value="'+esc(getOperatorName())+'" placeholder="Name"></div>' +
+      '<div class="fld"><label>Time</label><input id="rdTime" type="datetime-local" value="'+nowLocalInputValue()+'"></div>' +
+      (sec==='Braidline' ? '<div class="fld"><label>Pitch (in)</label><input id="rdPitch" type="number" step="0.01"></div>' : '') +
+      '<div class="fld"><label>OD (in)</label><input id="rdOD" type="number" step="0.001"></div>' +
+    '</div>' +
+    '<div class="row" style="margin-top:8px"><button class="btn pri" id="submitReadingBtn">Log reading</button></div>' +
+    readingsTableHtml(sec) +
+  '</section>' +
+
+  (sec !== 'Braidline' ? thicknessCheckCardHtml(sec) : '') +
+
+  '<section class="card">' +
+    '<h2>Notes</h2>' +
+    '<div class="row"><textarea id="noteText" style="flex:1" placeholder="Observation, deviation, disposition..."></textarea></div>' +
+    '<div class="row" style="margin-top:6px"><button class="btn" id="submitNoteBtn">Add note</button></div>' +
+    notesListHtml(sec) +
+  '</section>' +
+
+  '<section class="card">' +
+    '<h2>Photos</h2>' +
+    '<div class="row">' +
+      '<input id="photoFile" type="file" accept="image/*" capture="environment">' +
+      '<input id="photoCaption" placeholder="Caption (optional)" style="flex:1">' +
+      '<button class="btn" id="submitPhotoBtn">Upload</button>' +
+    '</div>' +
+    '<div class="photolist" style="margin-top:8px">' + photosListHtml(sec) + '</div>' +
+  '</section>';
+}
+
+function pillHtml(status){
+  var cls = status==='Complete' ? 'complete' : status==='In progress' ? 'inprogress' : 'notstarted';
+  return '<span class="pill '+cls+'">'+esc(status||'Not started')+'</span>';
+}
+
+function referenceTargetsHtml(wo, sec){
+  if (sec==='Baseline'){
+    return '<div class="grid g4">' +
+      '<div class="kpi"><b>Target OD</b><span>'+fmtTol(wo.BL_TargetOD)+'</span><i>&plusmn; '+fmtTol(wo.BL_ODTol)+'</i></div>' +
+      '<div class="kpi"><b>Target wall</b><span>'+fmtTol(wo.BL_TargetWall)+'</span></div>' +
+      '<div class="kpi"><b>Target ID</b><span>'+fmtTol(wo.BL_TargetID)+'</span></div>' +
+      '<div class="kpi"><b>16-pt check</b><span>Start / End</span></div>' +
+    '</div>' + (wo.BL_Notes ? '<p class="muted">'+esc(wo.BL_Notes)+'</p>' : '');
+  }
+  if (sec==='Braidline'){
+    return '<div class="grid g4">' +
+      '<div class="kpi"><b>Longs (ends up)</b><span>'+fmtTol(wo.BR_Longs)+'</span></div>' +
+      '<div class="kpi"><b>Target pitch</b><span>'+fmtTol(wo.BR_TargetPitch)+'</span><i>&plusmn; '+fmtTol(wo.BR_PitchTol)+'</i></div>' +
+      '<div class="kpi"><b>Target OD</b><span>'+fmtTol(wo.BR_TargetOD)+'</span><i>&plusmn; '+fmtTol(wo.BR_ODTol)+'</i></div>' +
+      '<div class="kpi"><b>&nbsp;</b><span></span></div>' +
+    '</div>' + (wo.BR_Notes ? '<p class="muted">'+esc(wo.BR_Notes)+'</p>' : '');
+  }
+  return '<div class="grid g4">' +
+    '<div class="kpi"><b>Target OD</b><span>'+fmtTol(wo.CV_TargetOD)+'</span><i>&plusmn; '+fmtTol(wo.CV_ODTol)+'</i></div>' +
+    '<div class="kpi"><b>Target wall</b><span>'+fmtTol(wo.CV_TargetWall)+'</span></div>' +
+    '<div class="kpi"><b>Target ID</b><span>'+fmtTol(wo.CV_TargetID)+'</span></div>' +
+    '<div class="kpi"><b>12-pt check</b><span>Start / End</span></div>' +
+  '</div>' + (wo.CV_Notes ? '<p class="muted">'+esc(wo.CV_Notes)+'</p>' : '');
+}
+function fmtTol(v){ return (v===''||v===undefined||v===null) ? '—' : v; }
+
+function readingsTableHtml(sec){
+  var rows = STATE.readings.filter(function(r){ return r.Section===sec; })
+    .sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); }).slice(0,20);
+  if (!rows.length) return '<p class="muted">No readings logged yet this section.</p>';
+  return '<table style="margin-top:8px"><thead><tr><th class="l">Time</th><th>Operator</th><th>Type</th><th>Value</th><th>Tolerance</th></tr></thead><tbody>' +
+    rows.map(function(r){
+      var dot = r.InTol==='Y' ? '<span class="dot good"></span>In tol' : r.InTol==='N' ? '<span class="dot bad"></span>Out of tol' : '<span class="dot none"></span>—';
+      return '<tr><td class="l">'+esc(fmtTime(r.Timestamp))+'</td><td>'+esc(r.Operator)+'</td><td>'+esc(r.Type)+'</td><td class="num">'+esc(r.Value)+'"</td><td>'+dot+'</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+
+function thicknessCheckCardHtml(sec){
+  var n = pointCount(sec);
+  var grid = '';
+  for (var i=0;i<n;i++){
+    grid += '<div class="fld"><label>'+pointLabel(sec,i)+'</label><input class="tPoint" data-i="'+i+'" type="number" step="0.001"></div>';
+  }
+  var checks = STATE.thicknessChecks.filter(function(c){ return c.Section===sec; })
+    .sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
+  return '<section class="card">' +
+    '<h2>Thickness check ('+n+'-point) &mdash; Start / End</h2>' +
+    '<div class="grid g4">' +
+      '<div class="fld"><label>Position</label><select id="tcPosition"><option>Start</option><option>End</option></select></div>' +
+      '<div class="fld"><label>Operator</label><input id="tcOperator" value="'+esc(getOperatorName())+'"></div>' +
+      '<div class="fld"><label>Time</label><input id="tcTime" type="datetime-local" value="'+nowLocalInputValue()+'"></div>' +
+      '<div class="fld"><label>OD (in)</label><input id="tcOD" type="number" step="0.001"></div>' +
+    '</div>' +
+    '<div class="fld" style="margin:10px 0 4px"><label>Wall thickness at each point (in)</label></div>' +
+    '<div class="clockgrid">' + grid + '</div>' +
+    '<div class="kpis" style="margin-top:10px">' +
+      '<div class="kpi"><b>Avg wall</b><span id="tcAvg">&mdash;</span></div>' +
+      '<div class="kpi"><b>Computed ID (OD &minus; 2&times;avg)</b><span id="tcId">&mdash;</span></div>' +
+      '<div class="kpi"><b>Ovality (max&minus;min)</b><span id="tcOv">&mdash;</span></div>' +
+      '<div class="kpi"><b>Points entered</b><span id="tcCount">0 / '+n+'</span></div>' +
+    '</div>' +
+    '<div class="row" style="margin-top:8px"><button class="btn pri" id="submitCheckBtn">Save thickness check</button></div>' +
+    (checks.length ? checksTableHtml(checks) : '<p class="muted">No thickness checks recorded yet.</p>') +
+  '</section>';
+}
+
+function checksTableHtml(checks){
+  return '<table style="margin-top:10px"><thead><tr><th class="l">Time</th><th>Position</th><th>Operator</th><th>OD</th><th>Avg wall</th><th>Computed ID</th><th>Ovality</th></tr></thead><tbody>' +
+    checks.map(function(c){
+      return '<tr><td class="l">'+esc(fmtTime(c.Timestamp))+'</td><td>'+esc(c.Position)+'</td><td>'+esc(c.Operator)+'</td>' +
+        '<td class="num">'+esc(c.OD)+'"</td><td class="num">'+esc(c.AvgThickness)+'"</td><td class="num">'+esc(c.ComputedID)+'"</td><td class="num">'+esc(c.Ovality)+'"</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+
+function notesListHtml(sec){
+  var notes = STATE.notes.filter(function(n){ return n.Section===sec; }).sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
+  if (!notes.length) return '<p class="muted">No notes yet.</p>';
+  return '<table style="margin-top:8px"><thead><tr><th class="l" style="width:30%">Time / Operator</th><th class="l">Note</th></tr></thead><tbody>' +
+    notes.map(function(n){ return '<tr><td class="l">'+esc(fmtTime(n.Timestamp))+'<br><span class="muted">'+esc(n.Operator)+'</span></td><td class="l">'+esc(n.Text)+'</td></tr>'; }).join('') +
+    '</tbody></table>';
+}
+
+function photosListHtml(sec){
+  var photos = STATE.photos.filter(function(p){ return p.Section===sec; }).sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
+  if (!photos.length) return '<p class="muted">No photos yet.</p>';
+  return photos.map(function(p){
+    return '<a class="photoitem" href="'+esc(p.DriveUrl)+'" target="_blank" rel="noopener">' +
+      '<img class="thumb" src="'+esc(p.DriveUrl)+'" onerror="this.style.display=\'none\'">' +
+      '<span>'+esc(p.Caption||fmtTime(p.Timestamp))+'</span></a>';
+  }).join('');
+}
+
+function liveThicknessCalc(sec){
+  var od = num(E('tcOD').value);
+  var pts = qsa('.tPoint').map(function(inp){ return num(inp.value); }).filter(function(v){ return v!==null; });
+  E('tcCount').textContent = pts.length + ' / ' + pointCount(sec);
+  if (!pts.length){ E('tcAvg').textContent='—'; E('tcId').textContent='—'; E('tcOv').textContent='—'; return; }
+  var avg = round4(pts.reduce(function(a,b){return a+b;},0)/pts.length);
+  E('tcAvg').textContent = avg + '"';
+  E('tcId').textContent = (od!==null) ? round4(od - 2*avg) + '"' : '—';
+  E('tcOv').textContent = round4(Math.max.apply(null,pts) - Math.min.apply(null,pts)) + '"';
+}
+
+function reloadWorkOrder(code){
+  return apiGet('getWorkOrder', {code: code}).then(function(data){
+    STATE.workOrder = data.workOrder; STATE.readings = data.readings;
+    STATE.thicknessChecks = data.thicknessChecks; STATE.notes = data.notes; STATE.photos = data.photos;
+  });
+}
+
+function bindOperator(){
+  E('backHomeBtn').addEventListener('click', function(){ go('home'); });
+  E('emailNowBtn').addEventListener('click', function(){
+    E('emailNowBtn').disabled = true;
+    apiPost('sendReport', {code: STATE.code, trigger: 'manual'})
+      .then(function(res){ toast('Report emailed to ' + res.sentTo); })
+      .catch(function(err){ toast(err.message, true); })
+      .then(function(){ E('emailNowBtn').disabled = false; });
+  });
+  qsa('.tabs button').forEach(function(b){ b.addEventListener('click', function(){ go('operator', {code: STATE.code, section: b.dataset.sec}); }); });
+
+  var sec = STATE.section, prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
+
+  var cb = E('completeSecBtn');
+  if (cb) cb.addEventListener('click', function(){
+    if (!confirm('Mark '+sec+' complete for '+STATE.code+'? This will email the report.')) return;
+    cb.disabled = true;
+    apiPost('setSectionStatus', {code: STATE.code, section: sec, status: 'Complete'})
+      .then(function(){ toast(sec+' marked complete'); return reloadWorkOrder(STATE.code); })
+      .then(function(){ render(); })
+      .catch(function(err){ toast(err.message, true); cb.disabled = false; });
+  });
+
+  E('submitReadingBtn').addEventListener('click', function(){
+    var operator = E('opName').value.trim();
+    if (!operator){ toast('Operator name is required', true); return; }
+    setOperatorName(operator);
+    var ts = new Date(E('rdTime').value).toISOString();
+    var odVal = num(E('rdOD').value);
+    var jobs = [];
+    if (sec === 'Braidline'){
+      var pitchVal = num(qs('#rdPitch') ? E('rdPitch').value : null);
+      if (pitchVal !== null) jobs.push(apiPost('addReading', {code:STATE.code, section:sec, type:'Pitch', value:pitchVal, operator:operator, timestamp:ts}));
+    }
+    if (odVal !== null) jobs.push(apiPost('addReading', {code:STATE.code, section:sec, type:'OD', value:odVal, operator:operator, timestamp:ts}));
+    if (!jobs.length){ toast('Enter at least one value', true); return; }
+    E('submitReadingBtn').disabled = true;
+    Promise.all(jobs).then(function(results){
+      var anyBad = results.some(function(r){ return r.InTol === 'N'; });
+      toast('Reading logged' + (anyBad ? ' — OUT OF TOLERANCE' : ''), anyBad);
+      return reloadWorkOrder(STATE.code);
+    }).then(function(){ render(); })
+      .catch(function(err){ toast(err.message, true); E('submitReadingBtn').disabled = false; });
+  });
+
+  if (sec !== 'Braidline'){
+    qsa('.tPoint').forEach(function(inp){ inp.addEventListener('input', function(){ liveThicknessCalc(sec); }); });
+    E('tcOD').addEventListener('input', function(){ liveThicknessCalc(sec); });
+    E('submitCheckBtn').addEventListener('click', function(){
+      var operator = E('tcOperator').value.trim();
+      if (!operator){ toast('Operator name is required', true); return; }
+      setOperatorName(operator);
+      var od = E('tcOD').value;
+      var points = [];
+      for (var i=0;i<pointCount(sec);i++) points.push('');
+      qsa('.tPoint').forEach(function(inp){ points[Number(inp.dataset.i)] = inp.value; });
+      var ts = new Date(E('tcTime').value).toISOString();
+      E('submitCheckBtn').disabled = true;
+      apiPost('addThicknessCheck', {code:STATE.code, section:sec, position:E('tcPosition').value, od:od, points:points, operator:operator, timestamp:ts})
+        .then(function(){ toast('Thickness check saved'); return reloadWorkOrder(STATE.code); })
+        .then(function(){ render(); })
+        .catch(function(err){ toast(err.message, true); E('submitCheckBtn').disabled = false; });
+    });
+  }
+
+  E('submitNoteBtn').addEventListener('click', function(){
+    var text = E('noteText').value.trim();
+    if (!text){ toast('Enter a note', true); return; }
+    var operator = E('opName') ? E('opName').value.trim() : getOperatorName();
+    E('submitNoteBtn').disabled = true;
+    apiPost('addNote', {code:STATE.code, section:sec, text:text, operator: operator || getOperatorName()})
+      .then(function(){ toast('Note added'); return reloadWorkOrder(STATE.code); })
+      .then(function(){ render(); })
+      .catch(function(err){ toast(err.message, true); E('submitNoteBtn').disabled = false; });
+  });
+
+  E('submitPhotoBtn').addEventListener('click', function(){
+    var file = E('photoFile').files[0];
+    if (!file){ toast('Choose a photo first', true); return; }
+    var caption = E('photoCaption').value.trim();
+    var operator = E('opName') ? E('opName').value.trim() : getOperatorName();
+    var reader = new FileReader();
+    E('submitPhotoBtn').disabled = true;
+    reader.onload = function(){
+      apiPost('addPhoto', {code:STATE.code, section:sec, caption:caption, operator: operator || getOperatorName(),
+        imageBase64: reader.result, filename: file.name, mimeType: file.type || 'image/jpeg'})
+        .then(function(){ toast('Photo uploaded'); return reloadWorkOrder(STATE.code); })
+        .then(function(){ render(); })
+        .catch(function(err){ toast(err.message, true); E('submitPhotoBtn').disabled = false; });
+    };
+    reader.readAsDataURL(file);
+  });
+
+  if (sec !== 'Braidline') liveThicknessCalc(sec);
+}
+
+/* ============================= DASHBOARD ============================= */
+function viewDashboard(){
+  return '<div id="dashRoot"><p class="muted">Loading&hellip;</p></div>';
+}
+
+function bindDashboard(){
+  loadDashboard();
+  STATE.dashTimer = setInterval(loadDashboard, 20000);
+}
+
+function loadDashboard(){
+  apiGet('dashboard').then(function(d){ renderDashboard(d); })
+    .catch(function(err){ E('dashRoot').innerHTML = '<p class="flag">Could not load dashboard: '+esc(err.message)+'</p>'; });
+}
+
+function renderDashboard(d){
+  var root = E('dashRoot');
+  if (!root) return;
+  var rows = d.active.map(function(w){
+    var lr = w.lastReading;
+    var lrHtml = lr ? (lr.Value+'" '+esc(lr.Type)+' <span class="muted">'+fmtRel(lr.Timestamp)+'</span> ' +
+      (lr.InTol==='Y' ? '<span class="dot good"></span>' : lr.InTol==='N' ? '<span class="dot bad"></span>' : '')) : '<span class="muted">none</span>';
+    var stale = lr && (Date.now()-new Date(lr.Timestamp).getTime()) > 75*60000 && w.overallStatus!=='Complete';
+    return '<tr class="dashRow" data-code="'+esc(w.code)+'" style="cursor:pointer">' +
+      '<td class="l">'+esc(w.code)+'</td><td class="l">'+esc(w.customer)+'</td>' +
+      '<td>'+pillHtml(w.blStatus)+'</td><td>'+pillHtml(w.brStatus)+'</td><td>'+pillHtml(w.cvStatus)+'</td>' +
+      '<td class="l">'+lrHtml+(stale?' <span class="flag">STALE</span>':'')+'</td>' +
+    '</tr>';
+  }).join('');
+
+  root.innerHTML =
+    '<section class="card">' +
+      '<h2>Active work orders ('+d.active.length+')</h2>' +
+      (d.active.length ? '<table><thead><tr><th class="l">Code</th><th class="l">Customer</th><th>Baseline</th><th>Braidline</th><th>Coverline</th><th class="l">Last reading</th></tr></thead><tbody>'+rows+'</tbody></table>'
+        : '<p class="muted">No active work orders.</p>') +
+      '<div class="muted" style="margin-top:8px;font-size:10px">Auto-refreshing every 20s &middot; server time '+fmtTime(d.serverTime)+'</div>' +
+    '</section>' +
+    '<div id="dashDetail"></div>' +
+    '<section class="card"><h2>Recently completed</h2>' +
+    (d.recentComplete.length ? '<table><thead><tr><th class="l">Code</th><th class="l">Customer</th><th class="l">Last updated</th></tr></thead><tbody>' +
+      d.recentComplete.map(function(w){ return '<tr><td class="l">'+esc(w.code)+'</td><td class="l">'+esc(w.customer)+'</td><td class="l">'+fmtTime(w.lastUpdated)+'</td></tr>'; }).join('') +
+      '</tbody></table>' : '<p class="muted">None yet.</p>') +
+    '</section>';
+
+  qsa('.dashRow', root).forEach(function(tr){
+    tr.addEventListener('click', function(){ openDashDetail(tr.dataset.code); });
+  });
+  if (STATE.dashOpenCode) openDashDetail(STATE.dashOpenCode);
+}
+
+function openDashDetail(code){
+  STATE.dashOpenCode = code;
+  var box = E('dashDetail');
+  box.innerHTML = '<section class="card"><p class="muted">Loading '+esc(code)+'&hellip;</p></section>';
+  apiGet('getWorkOrder', {code: code}).then(function(data){
+    if (STATE.dashOpenCode !== code) return;
+    box.innerHTML = dashDetailHtml(data);
+  }).catch(function(err){ box.innerHTML = '<section class="card"><p class="flag">'+esc(err.message)+'</p></section>'; });
+}
+
+function dashDetailHtml(data){
+  var wo = data.workOrder;
+  function odSeries(sec){ return data.readings.filter(function(r){ return r.Section===sec && r.Type==='OD'; }).sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); }); }
+  function statsOf(vals){ if(!vals.length) return null; return {min:Math.min.apply(null,vals), max:Math.max.apply(null,vals), avg:round4(vals.reduce(function(a,b){return a+b;},0)/vals.length)}; }
+
+  var sections = ['Baseline','Braidline','Coverline'];
+  var body = sections.map(function(sec){
+    var series = odSeries(sec);
+    var vals = series.map(function(r){ return Number(r.Value); });
+    var s = statsOf(vals);
+    return '<div style="margin-bottom:14px">' +
+      '<h3>'+sec+'</h3>' +
+      (s ? '<div class="kpis"><div class="kpi"><b>OD readings</b><span>'+series.length+'</span></div>' +
+        '<div class="kpi"><b>Min</b><span>'+s.min+'"</span></div><div class="kpi"><b>Max</b><span>'+s.max+'"</span></div>' +
+        '<div class="kpi"><b>Avg</b><span>'+s.avg+'"</span></div></div>' + sparklineSvg(vals) : '<p class="muted">No OD readings yet.</p>') +
+    '</div>';
+  }).join('');
+
+  return '<section class="card"><h2>'+esc(wo.Code)+' detail</h2>' +
+    '<div class="row"><span class="muted">'+esc(wo.Customer)+' &middot; '+esc(wo.ProductCode)+' &middot; '+esc(wo.PipeSize)+'</span>' +
+    '<span class="spacer"></span><button class="btn sm" id="openFromDashBtn">Open operator view</button>' +
+    '<button class="btn sm" id="emailFromDashBtn">Email report now</button>' +
+    '<button class="btn sm" id="closeDashDetailBtn">Close</button></div>' +
+    body +
+  '</section>';
+}
+
+function sparklineSvg(vals){
+  if (vals.length < 2) return '';
+  var w=600,h=44,pad=4;
+  var min=Math.min.apply(null,vals), max=Math.max.apply(null,vals);
+  var range = (max-min) || 1;
+  var pts = vals.map(function(v,i){
+    var x = pad + i*(w-2*pad)/(vals.length-1);
+    var y = h-pad - ((v-min)/range)*(h-2*pad);
+    return x.toFixed(1)+','+y.toFixed(1);
+  }).join(' ');
+  return '<svg class="sparkline" viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none">' +
+    '<polyline points="'+pts+'" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>' +
+  '</svg>';
+}
+
+/* ============================= SCANNER ============================= */
+var scanStream = null, scanRAF = null;
+function startScan(onResult){
+  var overlay = E('scanOverlay'), video = E('scanVideo'), canvas = E('scanCanvas');
+  overlay.style.display = 'flex';
+  navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}})
+    .then(function(stream){
+      scanStream = stream; video.srcObject = stream; video.play();
+      var ctx = canvas.getContext('2d');
+      function tick(){
+        if (video.readyState === video.HAVE_ENOUGH_DATA){
+          canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          var img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          var res = jsQR(img.data, img.width, img.height);
+          if (res && res.data){
+            stopScan();
+            var text = res.data;
+            var m = text.match(/[?&]code=([^&]+)/);
+            onResult(m ? decodeURIComponent(m[1]) : text);
+            return;
+          }
+        }
+        scanRAF = requestAnimationFrame(tick);
+      }
+      scanRAF = requestAnimationFrame(tick);
+    })
+    .catch(function(err){ overlay.style.display = 'none'; toast('Camera error: '+err.message, true); });
+}
+function stopScan(){
+  var overlay = E('scanOverlay');
+  overlay.style.display = 'none';
+  if (scanRAF) cancelAnimationFrame(scanRAF);
+  if (scanStream) scanStream.getTracks().forEach(function(t){ t.stop(); });
+  scanStream = null;
+}
+E('scanCancel').addEventListener('click', stopScan);
+
+/* ============================= BIND DISPATCH ============================= */
+function bindView(){
+  if (STATE.view === 'home') bindHome();
+  else if (STATE.view === 'controller') bindController(false);
+  else if (STATE.view === 'controllerNew') bindController(true);
+  else if (STATE.view === 'tagPrinted') bindTagPrinted();
+  else if (STATE.view === 'operator') bindOperator();
+  else if (STATE.view === 'dashboard') bindDashboard();
+}
+
+document.addEventListener('click', function(ev){
+  var t = ev.target.closest('[data-nav]');
+  if (t) go(t.dataset.nav);
+  var close = ev.target.closest('#closeDashDetailBtn');
+  if (close){ STATE.dashOpenCode = null; E('dashDetail').innerHTML=''; }
+  var openFromDash = ev.target.closest('#openFromDashBtn');
+  if (openFromDash){ var code = STATE.dashOpenCode; if (code) go('operator', {code: code, section:'Baseline'}); }
+  var emailFromDash = ev.target.closest('#emailFromDashBtn');
+  if (emailFromDash){
+    var dCode = STATE.dashOpenCode;
+    if (dCode){
+      emailFromDash.disabled = true;
+      apiPost('sendReport', {code: dCode, trigger: 'manual'})
+        .then(function(res){ toast('Report emailed to ' + res.sentTo); })
+        .catch(function(err){ toast(err.message, true); })
+        .then(function(){ emailFromDash.disabled = false; });
+    }
+  }
+});
+
+/* ============================= INIT ============================= */
+checkConnection();
+render();
+setInterval(checkConnection, 30000);
+</script>
+</body>
+</html>
