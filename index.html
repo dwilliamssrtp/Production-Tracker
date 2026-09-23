@@ -182,9 +182,28 @@
   .tv-pipe-val{font-size:clamp(16px,1.9vw,26px);font-weight:800;font-variant-numeric:tabular-nums;}
   .tv-pipe-val.good{color:var(--good);}
   .tv-pipe-val.bad{color:var(--crit);}
+  .tv-pipe-timer{font-size:clamp(9px,.95vw,13px);color:var(--mut);margin-top:3px;}
   .tv-dots{display:flex;justify-content:center;gap:9px;margin-top:clamp(16px,2.4vw,30px);}
   .tv-dot{width:10px;height:10px;border-radius:50%;background:var(--line);}
   .tv-dot.active{background:var(--accent);}
+  .tv-card-click{cursor:pointer;transition:border-color .15s;}
+  .tv-card-click:hover{border-color:var(--blue);}
+  .tv-pipe-click{cursor:pointer;transition:border-color .15s;}
+  .tv-pipe-click:hover{border-color:var(--blue);}
+  .tv-backbtn{font:700 clamp(12px,1.2vw,16px)/1 "Segoe UI",Arial,sans-serif;text-transform:uppercase;
+    letter-spacing:.04em;color:var(--mut);background:none;border:none;cursor:pointer;padding:0;}
+  .tv-backbtn:hover{color:var(--ink);}
+  .tv-tabs{display:flex;gap:clamp(6px,.8vw,10px);margin:clamp(14px,2vw,24px) 0 clamp(10px,1.4vw,18px);flex-wrap:wrap;}
+  .tv-tabbtn{font:700 clamp(12px,1.3vw,17px)/1 "Segoe UI",Arial,sans-serif;text-transform:uppercase;letter-spacing:.04em;
+    padding:clamp(8px,1vw,14px) clamp(14px,1.6vw,22px);border:1px solid var(--line);border-radius:8px;
+    background:var(--band);color:var(--mut);cursor:pointer;}
+  .tv-tabbtn.active{background:var(--blue);color:#fff;border-color:var(--blue);}
+  .tv-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:clamp(10px,1.4vw,18px);margin-bottom:clamp(14px,2vw,22px);}
+  .tv-kpi{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:6px;background:var(--band);
+    padding:clamp(10px,1.4vw,18px) clamp(12px,1.6vw,20px);}
+  .tv-kpi b{display:block;font-size:clamp(9px,.9vw,13px);font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;}
+  .tv-kpi span{font-size:clamp(20px,2.6vw,36px);font-weight:800;font-variant-numeric:tabular-nums;}
+  body.tv-active .odchart{height:min(50vw,560px);min-height:300px;}
 
   @media print{
     header,nav,.no-print,.tabs{display:none !important;}
@@ -209,6 +228,7 @@
   <nav>
     <button data-nav="home">Home</button>
     <button data-nav="dashboard">Dashboard</button>
+    <button data-nav="timers">Timers</button>
   </nav>
 </header>
 
@@ -239,10 +259,10 @@ var STATE = {
   view: 'home',
   pipeCode: '', workOrderCode: '',
   pipe: null, workOrder: null, siblingPipes: [],
-  readings: [], thicknessChecks: [], notes: [], photos: [], materialUsage: [], problemReports: [],
+  readings: [], thicknessChecks: [], notes: [], photos: [], materialUsage: [], problemReports: [], downtimeEvents: [],
   section: 'Baseline',
   dashTimer: null,
-  tvPage: 0, tvPageTimer: null,
+  tvPage: 0, tvPageTimer: null, tvDrillWO: null, tvDrillPipe: null, tvSection: null, tvPipeData: null,
   pdCode: null, pdSection: null, pdData: null
 };
 
@@ -337,6 +357,52 @@ function pillHtml(status){
   return '<span class="pill '+cls+'">'+esc(status||'Not started')+'</span>';
 }
 
+var DOWNTIME_REASONS = ['Mechanical', 'Material', 'Changeover', 'Quality hold', 'Break', 'Other'];
+
+function fmtHrsMin(minutes){
+  minutes = Math.round(minutes);
+  return Math.floor(minutes/60) + 'h ' + (minutes%60) + 'm';
+}
+
+// Mirrors computeProdTiming_ in Code.gs — kept in sync manually since this runs client-side
+// for live ticking between polls; the server version is the source of truth for the dashboard/TV.
+function computeProdTiming(wo, pipe, section, downtimeEvents){
+  var prefix = section==='Baseline'?'BL':section==='Braidline'?'BR':'CV';
+  if (pipe[prefix+'_Status'] !== 'In progress') return null;
+  var startedAt = pipe[prefix+'_StartedAt'];
+  if (!startedAt) return null;
+  var startMs = new Date(startedAt).getTime();
+  var nowMs = Date.now();
+
+  var events = (downtimeEvents||[]).filter(function(e){ return e.PipeCode===pipe.PipeCode && e.Section===section; });
+  var downMinutes = 0, openEvent = null;
+  events.forEach(function(e){
+    var s = new Date(e.StartTime).getTime();
+    var end = e.EndTime ? new Date(e.EndTime).getTime() : nowMs;
+    downMinutes += Math.max(0, (end-s)/60000);
+    if (!e.EndTime) openEvent = e;
+  });
+
+  var totalMinutes = Math.max(0, (nowMs-startMs)/60000);
+  var runningMinutes = Math.max(0, totalMinutes - downMinutes);
+
+  var targetLength = wo[prefix+'_TargetLength'], lineSpeed = wo[prefix+'_LineSpeed'];
+  var expectedMinutes = '';
+  if (targetLength!=='' && targetLength!==undefined && lineSpeed!=='' && lineSpeed!==undefined && Number(lineSpeed)>0){
+    expectedMinutes = round4(Number(targetLength)/Number(lineSpeed));
+  }
+
+  return {
+    status: openEvent ? 'down' : 'running',
+    downReason: openEvent ? openEvent.ReasonCode : '',
+    downNotes: openEvent ? openEvent.Notes : '',
+    downSince: openEvent ? openEvent.StartTime : '',
+    runningMinutes: round4(runningMinutes),
+    downMinutes: round4(downMinutes),
+    expectedMinutes: expectedMinutes
+  };
+}
+
 function firstOpenSection(pipe){
   if (pipe.BL_Status !== 'Complete') return 'Baseline';
   if (pipe.BR_Status !== 'Complete') return 'Braidline';
@@ -348,6 +414,7 @@ function applyPipeData(data){
   STATE.readings = data.readings; STATE.thicknessChecks = data.thicknessChecks;
   STATE.notes = data.notes; STATE.photos = data.photos; STATE.materialUsage = data.materialUsage || [];
   STATE.problemReports = data.problemReports || [];
+  STATE.downtimeEvents = data.downtimeEvents || [];
 }
 
 function reloadPipe(pipeCode){
@@ -357,6 +424,7 @@ function reloadPipe(pipeCode){
 /* ============================= NAV / RENDER ============================= */
 function go(view, opts){
   leaveTVIfActive();
+  stopProdTick();
   STATE.view = view;
   if (opts && opts.pipeCode !== undefined) STATE.pipeCode = opts.pipeCode;
   if (opts && opts.workOrderCode !== undefined) STATE.workOrderCode = opts.workOrderCode;
@@ -367,7 +435,8 @@ function go(view, opts){
 
 function render(){
   var dashLike = STATE.view === 'dashboard' || STATE.view === 'woDashboard' || STATE.view === 'pipeDetail';
-  qsa('nav button').forEach(function(b){ b.classList.toggle('active', b.dataset.nav === (dashLike ? 'dashboard' : 'home')); });
+  var navActive = STATE.view === 'timers' ? 'timers' : (dashLike ? 'dashboard' : 'home');
+  qsa('nav button').forEach(function(b){ b.classList.toggle('active', b.dataset.nav === navActive); });
   var app = E('app');
   if (STATE.view === 'home') app.innerHTML = viewHome();
   else if (STATE.view === 'controller') app.innerHTML = viewController(false);
@@ -378,6 +447,7 @@ function render(){
   else if (STATE.view === 'dashboard') app.innerHTML = viewDashboard();
   else if (STATE.view === 'woDashboard') app.innerHTML = viewWoDashboard();
   else if (STATE.view === 'pipeDetail') app.innerHTML = viewPipeDetail();
+  else if (STATE.view === 'timers') app.innerHTML = viewTimers();
   else if (STATE.view === 'tv') app.innerHTML = viewTV();
   bindView();
 }
@@ -388,9 +458,9 @@ function viewHome(){
   var urlPipe = params.get('pipe') || '';
   return '' +
   '<section class="card">' +
-    '<h2>Open a pipe or work order</h2>' +
+    '<h2>Open a reel or work order</h2>' +
     '<div class="row">' +
-      '<div class="fld" style="flex:1;min-width:180px"><label>Pipe code or work order code</label>' +
+      '<div class="fld" style="flex:1;min-width:180px"><label>Reel code or work order code</label>' +
         '<input id="codeInput" placeholder="e.g. BL20260128-R1" value="'+esc(urlPipe)+'"></div>' +
       '<button class="btn" id="scanBtn" style="align-self:flex-end">Scan QR</button>' +
       '<button class="btn pri" id="goBtn" style="align-self:flex-end">Go</button>' +
@@ -399,7 +469,7 @@ function viewHome(){
   '</section>' +
   '<section class="card">' +
     '<h2>New work order</h2>' +
-    '<p class="muted" style="margin-top:0">Controller: create a work order with reference targets from the MDS and recipe cards. A work order can hold several pipes/reels sharing the same targets — add each as its own pipe afterward.</p>' +
+    '<p class="muted" style="margin-top:0">Controller: create a work order with reference targets from the MDS and recipe cards. A work order can hold several reels sharing the same targets — add each as its own reel afterward.</p>' +
     '<button class="btn pri" id="newWoBtn">+ New work order</button>' +
   '</section>' +
   '<section class="card no-print">' +
@@ -443,7 +513,7 @@ function lookupCode(code){
     applyPipeData(data);
     STATE.pipeCode = code; STATE.workOrderCode = data.pipe.WorkOrderCode;
     box.innerHTML =
-      '<div class="row"><span class="ok">Pipe found:</span> <b>'+esc(code)+'</b> ' +
+      '<div class="row"><span class="ok">Reel found:</span> <b>'+esc(code)+'</b> ' +
       '<span class="muted">work order '+esc(data.pipe.WorkOrderCode)+' &middot; '+esc(data.workOrder.Customer||'')+'</span>' +
       '<span class="spacer"></span>' +
       '<button class="btn" id="viewWoFromPipeBtn">View work order</button>' +
@@ -455,18 +525,18 @@ function lookupCode(code){
       STATE.workOrderCode = code;
       STATE.workOrder = info.workOrder;
       var wo = info.workOrder;
-      var pipesHtml = info.pipes.length ? '<table style="margin-top:8px"><thead><tr><th class="l">Pipe</th><th>Status</th></tr></thead><tbody>' +
+      var pipesHtml = info.pipes.length ? '<table style="margin-top:8px"><thead><tr><th class="l">Reel</th><th>Status</th></tr></thead><tbody>' +
         info.pipes.map(function(p){
           return '<tr class="homePipeRow" data-pipe="'+esc(p.PipeCode)+'" style="cursor:pointer"><td class="l">'+esc(p.PipeCode)+'</td><td>'+pillHtml(p.OverallStatus)+'</td></tr>';
-        }).join('') + '</tbody></table>' : '<p class="muted" style="margin-top:8px">No pipes yet on this work order.</p>';
+        }).join('') + '</tbody></table>' : '<p class="muted" style="margin-top:8px">No reels yet on this work order.</p>';
       box.innerHTML =
         '<div class="row"><span class="ok">Work order found:</span> <b>'+esc(wo.Code)+'</b> ' +
-        '<span class="pill inprogress">'+info.pipes.length+' pipe'+(info.pipes.length===1?'':'s')+'</span>' +
+        '<span class="pill inprogress">'+info.pipes.length+' reel'+(info.pipes.length===1?'':'s')+'</span>' +
         '<span class="muted">'+esc(wo.Customer||'')+'</span>' +
         '<span class="spacer"></span>' +
-        '<button class="btn" id="viewWodBtn">View pipe dashboard</button>' +
+        '<button class="btn" id="viewWodBtn">View work order dashboard</button>' +
         '<button class="btn" id="editWoBtn">Edit targets</button>' +
-        '<button class="btn pri" id="addPipeBtn">+ Add new pipe</button></div>' +
+        '<button class="btn pri" id="addPipeBtn">+ Add new reel</button></div>' +
         pipesHtml;
       E('viewWodBtn').addEventListener('click', function(){ go('woDashboard', {workOrderCode: wo.Code}); });
       E('editWoBtn').addEventListener('click', function(){ go('controller', {workOrderCode: wo.Code}); });
@@ -475,7 +545,7 @@ function lookupCode(code){
         tr.addEventListener('click', function(){ lookupCode(tr.dataset.pipe); });
       });
     }).catch(function(){
-      box.innerHTML = '<p class="flag">No pipe or work order found for "'+esc(code)+'".</p>' +
+      box.innerHTML = '<p class="flag">No reel or work order found for "'+esc(code)+'".</p>' +
         '<button class="btn pri" id="createHereBtn">Create work order '+esc(code)+'</button>';
       var b = E('createHereBtn');
       if (b) b.addEventListener('click', function(){ go('controllerNew', {workOrderCode: code}); });
@@ -527,7 +597,7 @@ function viewController(isNew){
       '<div class="fld"><label>Controller / created by</label><input id="f_createdBy" value="'+(isNew? esc(getOperatorName()) : v('CreatedBy'))+'"></div>' +
       '<div class="fld"><label>Report email(s)</label><input id="f_emailTo" value="'+(isNew? 'dwilliams@specialtyrtp.com' : v('EmailTo'))+'" placeholder="comma-separated"></div>' +
     '</div>' +
-    '<p class="muted" style="margin:8px 0 0">This work order can hold several pipes/reels — since reel capacity may not fit the full project length in one run. Set targets once here; each pipe tracks its own progress and actual length.</p>' +
+    '<p class="muted" style="margin:8px 0 0">This work order can hold several reels — since a single reel may not fit the full project length in one run. Set targets once here; each reel tracks its own progress and actual length.</p>' +
   '</section>' +
 
   '<section class="card"><h2>Baseline — reference targets</h2>' +
@@ -536,7 +606,8 @@ function viewController(isNew){
       '<div class="fld"><label>OD tolerance ± (in)</label><input id="f_blODTol" type="number" step="0.001" value="'+v('BL_ODTol')+'"></div>' +
       '<div class="fld"><label>Target wall thickness (in)</label><input id="f_blTargetWall" type="number" step="0.001" value="'+v('BL_TargetWall')+'"></div>' +
       '<div class="fld"><label>Target ID (in)</label><input id="f_blTargetID" type="number" step="0.001" value="'+v('BL_TargetID')+'"></div>' +
-      '<div class="fld"><label>Target length per pipe (ft)</label><input id="f_blTargetLength" type="number" step="1" value="'+v('BL_TargetLength')+'"></div>' +
+      '<div class="fld"><label>Target length per reel (ft)</label><input id="f_blTargetLength" type="number" step="1" value="'+v('BL_TargetLength')+'"></div>' +
+      '<div class="fld"><label>Line speed (ft/min)</label><input id="f_blLineSpeed" type="number" step="0.1" value="'+v('BL_LineSpeed')+'"></div>' +
     '</div>' +
     processFieldsHtml('bl', wo) +
     '<div class="fld" style="margin-top:8px"><label>Recipe / MDS reference notes</label><textarea id="f_blNotes">'+v('BL_Notes')+'</textarea></div>' +
@@ -551,7 +622,8 @@ function viewController(isNew){
       '<div class="fld"><label>OD tolerance ± (in)</label><input id="f_brODTol" type="number" step="0.001" value="'+v('BR_ODTol')+'"></div>' +
       '<div class="fld"><label>Target pitch (in) — cross braid</label><input id="f_brTargetPitch" type="number" step="0.01" value="'+v('BR_TargetPitch')+'"></div>' +
       '<div class="fld"><label>Pitch tolerance ± (in)</label><input id="f_brPitchTol" type="number" step="0.01" value="'+v('BR_PitchTol')+'"></div>' +
-      '<div class="fld"><label>Target length per pipe (ft)</label><input id="f_brTargetLength" type="number" step="1" value="'+v('BR_TargetLength')+'"></div>' +
+      '<div class="fld"><label>Target length per reel (ft)</label><input id="f_brTargetLength" type="number" step="1" value="'+v('BR_TargetLength')+'"></div>' +
+      '<div class="fld"><label>Line speed (ft/min)</label><input id="f_brLineSpeed" type="number" step="0.1" value="'+v('BR_LineSpeed')+'"></div>' +
     '</div>' +
     '<div class="fld" style="margin-top:8px"><label>Recipe reference notes</label><textarea id="f_brNotes">'+v('BR_Notes')+'</textarea></div>' +
   '</section>' +
@@ -562,7 +634,8 @@ function viewController(isNew){
       '<div class="fld"><label>OD tolerance ± (in)</label><input id="f_cvODTol" type="number" step="0.001" value="'+v('CV_ODTol')+'"></div>' +
       '<div class="fld"><label>Target wall thickness (in)</label><input id="f_cvTargetWall" type="number" step="0.001" value="'+v('CV_TargetWall')+'"></div>' +
       '<div class="fld"><label>Target ID (in)</label><input id="f_cvTargetID" type="number" step="0.001" value="'+v('CV_TargetID')+'"></div>' +
-      '<div class="fld"><label>Target length per pipe (ft)</label><input id="f_cvTargetLength" type="number" step="1" value="'+v('CV_TargetLength')+'"></div>' +
+      '<div class="fld"><label>Target length per reel (ft)</label><input id="f_cvTargetLength" type="number" step="1" value="'+v('CV_TargetLength')+'"></div>' +
+      '<div class="fld"><label>Line speed (ft/min)</label><input id="f_cvLineSpeed" type="number" step="0.1" value="'+v('CV_LineSpeed')+'"></div>' +
     '</div>' +
     processFieldsHtml('cv', wo) +
     '<div class="fld" style="margin-top:8px"><label>Recipe / MDS reference notes</label><textarea id="f_cvNotes">'+v('CV_Notes')+'</textarea></div>' +
@@ -587,14 +660,14 @@ function collectControllerForm(isNew){
     projectLength: E('f_projectLength').value,
     blTargetOD: E('f_blTargetOD').value, blODTol: E('f_blODTol').value,
     blTargetWall: E('f_blTargetWall').value, blTargetID: E('f_blTargetID').value,
-    blTargetLength: E('f_blTargetLength').value, blNotes: E('f_blNotes').value,
+    blTargetLength: E('f_blTargetLength').value, blLineSpeed: E('f_blLineSpeed').value, blNotes: E('f_blNotes').value,
     brLongsCount: E('f_brLongsCount').value, brLongsEndsUp: E('f_brLongsEndsUp').value, brXbraidEndsUp: E('f_brXbraidEndsUp').value,
     brTargetPitch: E('f_brTargetPitch').value, brPitchTol: E('f_brPitchTol').value,
     brTargetOD: E('f_brTargetOD').value, brODTol: E('f_brODTol').value,
-    brTargetLength: E('f_brTargetLength').value, brNotes: E('f_brNotes').value,
+    brTargetLength: E('f_brTargetLength').value, brLineSpeed: E('f_brLineSpeed').value, brNotes: E('f_brNotes').value,
     cvTargetOD: E('f_cvTargetOD').value, cvODTol: E('f_cvODTol').value,
     cvTargetWall: E('f_cvTargetWall').value, cvTargetID: E('f_cvTargetID').value,
-    cvTargetLength: E('f_cvTargetLength').value, cvNotes: E('f_cvNotes').value
+    cvTargetLength: E('f_cvTargetLength').value, cvLineSpeed: E('f_cvLineSpeed').value, cvNotes: E('f_cvNotes').value
   };
   collectProcessFields('bl', body);
   collectProcessFields('cv', body);
@@ -621,16 +694,16 @@ function bindController(isNew){
 /* ============================= ADD PIPE ============================= */
 function viewAddPipe(){
   return '<section class="card">' +
-    '<h2>Add a pipe — work order '+esc(STATE.workOrderCode)+'</h2>' +
-    '<p class="muted" style="margin-top:0">Each pipe/reel shares this work order&rsquo;s targets but gets a clean slate: its own status per section, its own readings, and its own length.</p>' +
+    '<h2>Add a reel — work order '+esc(STATE.workOrderCode)+'</h2>' +
+    '<p class="muted" style="margin-top:0">Each reel shares this work order&rsquo;s targets but gets a clean slate: its own status per section, its own readings, and its own length.</p>' +
     '<div class="grid g2">' +
-      '<div class="fld"><label>Pipe code</label><input id="f_pipeCode" placeholder="e.g. BL20260128-R1"></div>' +
+      '<div class="fld"><label>Reel code</label><input id="f_pipeCode" placeholder="e.g. BL20260128-R1"></div>' +
       '<div class="fld"><label>Created by</label><input id="f_pipeCreatedBy" value="'+esc(getOperatorName())+'"></div>' +
     '</div>' +
     '<div class="row" style="margin-top:10px">' +
       '<button class="btn" id="cancelPipeBtn">Cancel</button>' +
       '<span class="spacer"></span>' +
-      '<button class="btn pri" id="createPipeBtn">Create pipe</button>' +
+      '<button class="btn pri" id="createPipeBtn">Create reel</button>' +
     '</div>' +
   '</section>';
 }
@@ -639,12 +712,12 @@ function bindAddPipe(){
   E('cancelPipeBtn').addEventListener('click', function(){ go('home'); });
   E('createPipeBtn').addEventListener('click', function(){
     var pipeCode = E('f_pipeCode').value.trim();
-    if (!pipeCode){ toast('Pipe code is required', true); return; }
+    if (!pipeCode){ toast('Reel code is required', true); return; }
     var createdBy = E('f_pipeCreatedBy').value.trim();
     setOperatorName(createdBy);
     E('createPipeBtn').disabled = true;
     apiPost('createPipe', {pipeCode: pipeCode, workOrderCode: STATE.workOrderCode, createdBy: createdBy})
-      .then(function(){ toast('Pipe created'); return apiGet('getPipe', {pipeCode: pipeCode}); })
+      .then(function(){ toast('Reel created'); return apiGet('getPipe', {pipeCode: pipeCode}); })
       .then(function(data){ applyPipeData(data); STATE.pipeCode = pipeCode; go('tagPrinted', {pipeCode: pipeCode}); })
       .catch(function(err){ toast(err.message, true); E('createPipeBtn').disabled = false; });
   });
@@ -655,7 +728,7 @@ function viewTagPrinted(){
   var pipe = STATE.pipe, wo = STATE.workOrder;
   return '' +
   '<section class="card">' +
-    '<h2>Pipe created</h2>' +
+    '<h2>Reel created</h2>' +
     '<div class="qrbox" id="tagQr"></div>' +
     '<div class="tagmeta">' +
       '<div style="font-size:18px;font-weight:700">'+esc(pipe.PipeCode)+'</div>' +
@@ -665,7 +738,7 @@ function viewTagPrinted(){
     '<div class="row" style="justify-content:center;margin-top:10px">' +
       '<button class="btn" id="printBtn">Print tag</button>' +
       '<button class="btn pri" id="startOpBtn">Start Baseline entry</button>' +
-      '<button class="btn" id="addAnotherBtn">Add another pipe</button>' +
+      '<button class="btn" id="addAnotherBtn">Add another reel</button>' +
       '<button class="btn" id="homeAfterBtn">Home</button>' +
     '</div>' +
   '</section>';
@@ -736,6 +809,8 @@ function viewOperator(){
     '</div>' : '') +
   '</section>' +
 
+  productionTimerCardHtml(wo, pipe, sec) +
+
   '<section class="card">' +
     '<h2>Hourly reading</h2>' +
     '<div class="grid g4">' +
@@ -743,6 +818,7 @@ function viewOperator(){
       '<div class="fld"><label>Time</label><input id="rdTime" type="datetime-local" value="'+nowLocalInputValue()+'"></div>' +
       (sec==='Braidline' ? '<div class="fld"><label>Pitch (in)</label><input id="rdPitch" type="number" step="0.01"></div>' : '') +
       '<div class="fld"><label>OD (in)</label><input id="rdOD" type="number" step="0.001"></div>' +
+      '<div class="fld"><label>Footage marker (ft)</label><input id="rdFootage" type="number" step="1" placeholder="optional"></div>' +
     '</div>' +
     '<div class="row" style="margin-top:8px"><button class="btn pri" id="submitReadingBtn">Log reading</button></div>' +
     readingsTableHtml(sec) +
@@ -769,6 +845,72 @@ function viewOperator(){
   '</section>';
 }
 
+// Actual ft/min from footage markers entered alongside OD readings: an overall average
+// (first-to-last footage over elapsed calendar time) and a "current" rate from just the
+// last two footage-tagged readings, which reacts faster to a recent slowdown/speedup.
+function computeActualSpeed(readings, section){
+  var pts = readings.filter(function(r){ return r.Section===section && r.Type==='OD' && r.Footage!=='' && r.Footage!==undefined; })
+    .map(function(r){ return {t: new Date(r.Timestamp).getTime(), f: Number(r.Footage)}; })
+    .sort(function(a,b){ return a.t-b.t; });
+  if (pts.length < 2) return null;
+  var first = pts[0], last = pts[pts.length-1];
+  var totalMin = (last.t-first.t)/60000;
+  var avg = totalMin>0 ? (last.f-first.f)/totalMin : null;
+  var prev = pts[pts.length-2];
+  var curMin = (last.t-prev.t)/60000;
+  var current = curMin>0 ? (last.f-prev.f)/curMin : null;
+  return {
+    avg: (avg!==null && isFinite(avg) && avg>0) ? round4(avg) : null,
+    current: (current!==null && isFinite(current) && current>0) ? round4(current) : null,
+    points: pts.length
+  };
+}
+
+function productionTimerCardHtml(wo, pipe, sec){
+  var prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
+  if (pipe[prefix+'_Status'] !== 'In progress') return '';
+  var timing = computeProdTiming(wo, pipe, sec, STATE.downtimeEvents);
+  if (!timing) return '';
+  var pct = timing.expectedMinutes ? Math.round(100*timing.runningMinutes/timing.expectedMinutes) : null;
+  var downMin = timing.status==='down' ? Math.max(0,(Date.now()-new Date(timing.downSince).getTime())/60000) : 0;
+  var actual = computeActualSpeed(STATE.readings, sec);
+  var targetSpeed = wo[prefix+'_LineSpeed'];
+
+  return '<section class="card">' +
+    '<h2>Production timer</h2>' +
+    '<div class="row" id="prodStatusRow">' +
+      (timing.status==='running' ? '<span class="pill inprogress">Running</span>' :
+        '<span class="pill" style="background:var(--crit)">Down &mdash; '+esc(timing.downReason)+'</span>') +
+      (timing.status==='down' ? '<span class="muted" id="prodDownDuration">down '+fmtHrsMin(downMin)+'</span>' : '') +
+      '<span class="spacer"></span>' +
+      (timing.status==='running' ? '' +
+        (sec==='Braidline' ? '<button class="btn sm" id="bobbinChangeoutBtn">Bobbin changeout</button>' : '') +
+        '<button class="btn sm danger" id="stopProdBtn">Stop production</button>' :
+        '<button class="btn sm pri" id="resumeProdBtn">Resume production</button>') +
+    '</div>' +
+    (timing.status==='running' ? '<div class="row" id="stopReasonForm" style="display:none;margin-top:8px">' +
+      '<div class="fld" style="max-width:170px"><label>Reason</label><select id="downReason">'+DOWNTIME_REASONS.map(function(r){return '<option>'+esc(r)+'</option>';}).join('')+'</select></div>' +
+      '<div class="fld" style="flex:1;min-width:140px"><label>Notes (optional)</label><input id="downNotes"></div>' +
+      '<button class="btn sm" id="cancelStopBtn" style="align-self:flex-end">Cancel</button>' +
+      '<button class="btn sm danger" id="confirmStopBtn" style="align-self:flex-end">Confirm stop</button>' +
+    '</div>' : '') +
+    '<div class="kpis" style="margin-top:8px">' +
+      '<div class="kpi"><b>Running time</b><span id="prodElapsed">'+fmtHrsMin(timing.runningMinutes)+'</span></div>' +
+      '<div class="kpi"><b>Expected time</b><span>'+(timing.expectedMinutes!==''?fmtHrsMin(timing.expectedMinutes):'&mdash;')+'</span></div>' +
+      '<div class="kpi"><b>Downtime so far</b><span>'+fmtHrsMin(timing.downMinutes)+'</span></div>' +
+      '<div class="kpi"><b>Pace</b><span>'+(pct!==null?pct+'%':'&mdash;')+'</span></div>' +
+    '</div>' +
+    (pct!==null ? '<div class="lenbar"><div class="lenfill" id="prodBarFill" style="width:'+Math.min(100,pct)+'%;background:'+(pct>100?'var(--crit)':'var(--blue)')+'"></div></div>' : '') +
+    '<div class="fld" style="margin-top:10px"><label>Actual line speed (from footage markers)</label></div>' +
+    '<div class="kpis">' +
+      '<div class="kpi"><b>Target speed</b><span>'+(targetSpeed!==''?targetSpeed:'&mdash;')+'</span><i>ft/min</i></div>' +
+      '<div class="kpi"><b>Actual — current</b><span>'+(actual&&actual.current!==null?actual.current:'&mdash;')+'</span><i>ft/min, last 2 readings</i></div>' +
+      '<div class="kpi"><b>Actual — average</b><span>'+(actual&&actual.avg!==null?actual.avg:'&mdash;')+'</span><i>ft/min, this run</i></div>' +
+    '</div>' +
+    (!actual ? '<p class="muted" style="font-size:10px">Log a footage marker with at least 2 hourly readings to see actual speed.</p>' : '') +
+  '</section>';
+}
+
 function setupReferenceHtml(wo){
   return '' +
   '<section class="card">' +
@@ -777,7 +919,7 @@ function setupReferenceHtml(wo){
       '<div class="kpi"><b>Customer</b><span style="font-size:14px">'+fmtTol(wo.Customer)+'</span></div>' +
       '<div class="kpi"><b>Product code</b><span style="font-size:14px">'+fmtTol(wo.ProductCode)+'</span></div>' +
       '<div class="kpi"><b>Pipe size</b><span style="font-size:14px">'+fmtTol(wo.PipeSize)+'</span></div>' +
-      '<div class="kpi"><b>Project length</b><span>'+fmtTol(wo.ProjectLength)+'</span><i>ft total, across all pipes</i></div>' +
+      '<div class="kpi"><b>Project length</b><span>'+fmtTol(wo.ProjectLength)+'</span><i>ft total, across all reels</i></div>' +
     '</div>' +
   '</section>' +
   '<section class="card"><h2>Baseline reference</h2>' + referenceTargetsHtml(wo, 'Baseline') + '</section>' +
@@ -792,6 +934,7 @@ function referenceTargetsHtml(wo, sec){
       '<div class="kpi"><b>Target wall</b><span>'+fmtTol(wo.BL_TargetWall)+'</span></div>' +
       '<div class="kpi"><b>Target ID</b><span>'+fmtTol(wo.BL_TargetID)+'</span></div>' +
       '<div class="kpi"><b>Target length</b><span>'+fmtTol(wo.BL_TargetLength)+'</span><i>ft &middot; 16-pt check Start/End</i></div>' +
+      '<div class="kpi"><b>Line speed</b><span>'+fmtTol(wo.BL_LineSpeed)+'</span><i>ft/min'+lineSpeedHint(wo,'BL')+'</i></div>' +
     '</div>' + processRefHtml('BL', wo) + (wo.BL_Notes ? '<p class="muted">'+esc(wo.BL_Notes)+'</p>' : '');
   }
   if (sec==='Braidline'){
@@ -800,6 +943,7 @@ function referenceTargetsHtml(wo, sec){
       '<div class="kpi"><b>Xbraids — ends up</b><span>'+fmtTol(wo.BR_XbraidEndsUp)+'</span></div>' +
       '<div class="kpi"><b>Target pitch</b><span>'+fmtTol(wo.BR_TargetPitch)+'</span><i>&plusmn; '+fmtTol(wo.BR_PitchTol)+'</i></div>' +
       '<div class="kpi"><b>Target OD / length</b><span>'+fmtTol(wo.BR_TargetOD)+'</span><i>&plusmn; '+fmtTol(wo.BR_ODTol)+' &middot; '+fmtTol(wo.BR_TargetLength)+' ft</i></div>' +
+      '<div class="kpi"><b>Line speed</b><span>'+fmtTol(wo.BR_LineSpeed)+'</span><i>ft/min'+lineSpeedHint(wo,'BR')+'</i></div>' +
     '</div>' + (wo.BR_Notes ? '<p class="muted">'+esc(wo.BR_Notes)+'</p>' : '');
   }
   return '<div class="grid g4">' +
@@ -807,30 +951,60 @@ function referenceTargetsHtml(wo, sec){
     '<div class="kpi"><b>Target wall</b><span>'+fmtTol(wo.CV_TargetWall)+'</span></div>' +
     '<div class="kpi"><b>Target ID</b><span>'+fmtTol(wo.CV_TargetID)+'</span></div>' +
     '<div class="kpi"><b>Target length</b><span>'+fmtTol(wo.CV_TargetLength)+'</span><i>ft &middot; 12-pt check Start/End</i></div>' +
+    '<div class="kpi"><b>Line speed</b><span>'+fmtTol(wo.CV_LineSpeed)+'</span><i>ft/min'+lineSpeedHint(wo,'CV')+'</i></div>' +
   '</div>' + processRefHtml('CV', wo) + (wo.CV_Notes ? '<p class="muted">'+esc(wo.CV_Notes)+'</p>' : '');
 }
 
+function lineSpeedHint(wo, prefix){
+  var len = wo[prefix+'_TargetLength'], speed = wo[prefix+'_LineSpeed'];
+  if (len==='' || len===undefined || speed==='' || speed===undefined || Number(speed)<=0) return '';
+  return ' &middot; ~'+fmtHrsMin(Number(len)/Number(speed))+' expected';
+}
+
 function processRefHtml(prefix, wo){
-  var parts = [];
-  if (wo[prefix+'_ChillerTemp']) parts.push('Chiller '+esc(wo[prefix+'_ChillerTemp']));
-  if (wo[prefix+'_VacuumLevel']) parts.push('Vacuum '+esc(wo[prefix+'_VacuumLevel']));
-  if (wo[prefix+'_BackerRPM']) parts.push('Backer RPM '+esc(wo[prefix+'_BackerRPM']));
-  var zones = ['TZ1','TZ2','TZ3','TZ4','TZ5','TClamp'].map(function(z){ return wo[prefix+'_'+z]; }).filter(function(x){ return x!==''&&x!==undefined; });
-  if (zones.length) parts.push('Zones '+zones.map(esc).join('/'));
-  var die = ['DieBody','DieManifold','DieRetainer','DieFlange'].map(function(z){ return wo[prefix+'_'+z]; }).filter(function(x){ return x!==''&&x!==undefined; });
-  if (die.length) parts.push('Die '+die.map(esc).join('/'));
-  if (!parts.length) return '';
-  return '<div class="muted" style="font-size:10px;margin-top:6px">Process ref &mdash; '+parts.join(' &middot; ')+'</div>';
+  var chiller = wo[prefix+'_ChillerTemp'], vacuum = wo[prefix+'_VacuumLevel'], rpm = wo[prefix+'_BackerRPM'];
+  var zoneKeys = ['TZ1','TZ2','TZ3','TZ4','TZ5','TClamp'], zoneLabels = ['Zone 1','Zone 2','Zone 3','Zone 4','Zone 5','Clamp'];
+  var dieKeys = ['DieBody','DieManifold','DieRetainer','DieFlange'], dieLabels = ['Body','Manifold','Retainer','Flange'];
+
+  var hasAny = chiller || vacuum || rpm ||
+    zoneKeys.some(function(z){ return wo[prefix+'_'+z]!==''&&wo[prefix+'_'+z]!==undefined; }) ||
+    dieKeys.some(function(d){ return wo[prefix+'_'+d]!==''&&wo[prefix+'_'+d]!==undefined; });
+  if (!hasAny) return '';
+
+  var html = '<div class="fld" style="margin-top:12px"><label>Process setup (from recipe card)</label></div>' +
+    '<div class="grid g4">' +
+      '<div class="kpi"><b>Chiller set temp</b><span>'+fmtTol(chiller)+'</span></div>' +
+      '<div class="kpi"><b>Vacuum level</b><span>'+fmtTol(vacuum)+'</span></div>' +
+      '<div class="kpi"><b>Backer extruder RPM</b><span>'+fmtTol(rpm)+'</span></div>' +
+      '<div class="kpi" style="visibility:hidden"><b>&nbsp;</b><span>&nbsp;</span></div>' +
+    '</div>';
+
+  if (zoneKeys.some(function(z){ return wo[prefix+'_'+z]!==''&&wo[prefix+'_'+z]!==undefined; })){
+    html += '<div class="fld" style="margin-top:8px"><label>Backer extruder temp zones (&deg;F)</label></div>' +
+      '<div class="grid g6">' + zoneLabels.map(function(lbl,i){
+        return '<div class="kpi"><b>'+lbl+'</b><span>'+fmtTol(wo[prefix+'_'+zoneKeys[i]])+'</span></div>';
+      }).join('') + '</div>';
+  }
+
+  if (dieKeys.some(function(d){ return wo[prefix+'_'+d]!==''&&wo[prefix+'_'+d]!==undefined; })){
+    html += '<div class="fld" style="margin-top:8px"><label>Die temps (&deg;F)</label></div>' +
+      '<div class="grid g4">' + dieLabels.map(function(lbl,i){
+        return '<div class="kpi"><b>'+lbl+'</b><span>'+fmtTol(wo[prefix+'_'+dieKeys[i]])+'</span></div>';
+      }).join('') + '</div>';
+  }
+
+  return html;
 }
 
 function readingsTableHtml(sec){
   var rows = STATE.readings.filter(function(r){ return r.Section===sec; })
     .sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); }).slice(0,20);
   if (!rows.length) return '<p class="muted">No readings logged yet this section.</p>';
-  return '<table style="margin-top:8px"><thead><tr><th class="l">Time</th><th>Operator</th><th>Type</th><th>Value</th><th>Tolerance</th></tr></thead><tbody>' +
+  return '<table style="margin-top:8px"><thead><tr><th class="l">Time</th><th>Operator</th><th>Type</th><th>Value</th><th>Footage</th><th>Tolerance</th></tr></thead><tbody>' +
     rows.map(function(r){
       var dot = r.InTol==='Y' ? '<span class="dot good"></span>In tol' : r.InTol==='N' ? '<span class="dot bad"></span>Out of tol' : '<span class="dot none"></span>—';
-      return '<tr><td class="l">'+esc(fmtTime(r.Timestamp))+'</td><td>'+esc(r.Operator)+'</td><td>'+esc(r.Type)+'</td><td class="num">'+esc(r.Value)+'"</td><td>'+dot+'</td></tr>';
+      return '<tr><td class="l">'+esc(fmtTime(r.Timestamp))+'</td><td>'+esc(r.Operator)+'</td><td>'+esc(r.Type)+'</td><td class="num">'+esc(r.Value)+'"</td>' +
+        '<td class="num">'+(r.Footage!==''&&r.Footage!==undefined?esc(r.Footage)+' ft':'&mdash;')+'</td><td>'+dot+'</td></tr>';
     }).join('') + '</tbody></table>';
 }
 
@@ -924,10 +1098,10 @@ function problemReportTabHtml(){
   return '' +
   '<section class="card">' +
     '<h2>Report a problem</h2>' +
-    '<p class="muted" style="margin-top:0">Flag an issue with this pipe — it shows up on the Dashboard and TV view for the controller/supervisor until resolved.</p>' +
+    '<p class="muted" style="margin-top:0">Flag an issue with this reel — it shows up on the Dashboard and TV view for the controller/supervisor until resolved.</p>' +
     '<div class="grid g4">' +
       '<div class="fld"><label>Section</label><select id="probSection"><option>General</option><option>Baseline</option><option>Braidline</option><option>Coverline</option></select></div>' +
-      '<div class="fld"><label>Footage marker (ft)</label><input id="probFootage" type="number" step="1" placeholder="where on the pipe"></div>' +
+      '<div class="fld"><label>Footage marker (ft)</label><input id="probFootage" type="number" step="1" placeholder="where on the reel"></div>' +
       '<div class="fld"><label>Operator</label><input id="probOperator" value="'+esc(getOperatorName())+'"></div>' +
       '<div class="fld"><label>Time</label><input id="probTime" type="datetime-local" value="'+nowLocalInputValue()+'"></div>' +
     '</div>' +
@@ -936,7 +1110,7 @@ function problemReportTabHtml(){
     '<div class="row" style="margin-top:8px"><button class="btn pri" id="submitProblemBtn">Submit problem report</button></div>' +
   '</section>' +
   '<section class="card">' +
-    '<h2>Reports on this pipe</h2>' +
+    '<h2>Reports on this reel</h2>' +
     (reports.length ? reports.map(problemReportCardHtml).join('') : '<p class="muted">No problems reported yet.</p>') +
   '</section>';
 }
@@ -1025,6 +1199,66 @@ function photosListHtml(sec){
   }).join('');
 }
 
+var prodTickTimer = null;
+function stopProdTick(){ if (prodTickTimer){ clearInterval(prodTickTimer); prodTickTimer = null; } }
+function startProdTick(wo, pipe, sec){
+  stopProdTick();
+  prodTickTimer = setInterval(function(){
+    var timing = computeProdTiming(wo, pipe, sec, STATE.downtimeEvents);
+    if (!timing) return;
+    if (timing.status === 'running'){
+      var el = E('prodElapsed'); if (el) el.textContent = fmtHrsMin(timing.runningMinutes);
+      var bar = E('prodBarFill');
+      if (bar && timing.expectedMinutes !== ''){
+        var pct = Math.round(100*timing.runningMinutes/timing.expectedMinutes);
+        bar.style.width = Math.min(100,pct) + '%';
+        bar.style.background = pct>100 ? 'var(--crit)' : 'var(--blue)';
+      }
+    } else {
+      var dd = E('prodDownDuration');
+      if (dd) dd.textContent = 'down ' + fmtHrsMin(Math.max(0,(Date.now()-new Date(timing.downSince).getTime())/60000));
+    }
+  }, 1000);
+}
+
+function bindProductionTimer(wo, pipe, sec){
+  if (!E('prodStatusRow')) return;
+  var stopBtn = E('stopProdBtn');
+  if (stopBtn) stopBtn.addEventListener('click', function(){ E('stopReasonForm').style.display = 'flex'; E('prodStatusRow').style.display = 'none'; });
+  var cancelBtn = E('cancelStopBtn');
+  if (cancelBtn) cancelBtn.addEventListener('click', function(){ E('stopReasonForm').style.display = 'none'; E('prodStatusRow').style.display = 'flex'; });
+  var confirmBtn = E('confirmStopBtn');
+  if (confirmBtn) confirmBtn.addEventListener('click', function(){
+    var operator = getOperatorName() || (E('opName') ? E('opName').value.trim() : '');
+    if (!operator){ toast('Enter your name (Hourly reading section) first', true); return; }
+    confirmBtn.disabled = true;
+    apiPost('startDowntime', {pipeCode: STATE.pipeCode, section: sec, reasonCode: E('downReason').value, notes: E('downNotes').value.trim(), operator: operator})
+      .then(function(){ toast('Downtime started'); return reloadPipe(STATE.pipeCode); })
+      .then(function(){ render(); })
+      .catch(function(err){ toast(err.message, true); confirmBtn.disabled = false; });
+  });
+  var resumeBtn = E('resumeProdBtn');
+  if (resumeBtn) resumeBtn.addEventListener('click', function(){
+    var operator = getOperatorName() || (E('opName') ? E('opName').value.trim() : '');
+    resumeBtn.disabled = true;
+    apiPost('endDowntime', {pipeCode: STATE.pipeCode, section: sec, operator: operator})
+      .then(function(){ toast('Production resumed'); return reloadPipe(STATE.pipeCode); })
+      .then(function(){ render(); })
+      .catch(function(err){ toast(err.message, true); resumeBtn.disabled = false; });
+  });
+  var bobbinBtn = E('bobbinChangeoutBtn');
+  if (bobbinBtn) bobbinBtn.addEventListener('click', function(){
+    var operator = getOperatorName() || (E('opName') ? E('opName').value.trim() : '');
+    if (!operator){ toast('Enter your name (Hourly reading section) first', true); return; }
+    bobbinBtn.disabled = true;
+    apiPost('startDowntime', {pipeCode: STATE.pipeCode, section: sec, reasonCode: 'Changeover', notes: 'Bobbin changeout', operator: operator})
+      .then(function(){ toast('Bobbin changeout logged — tap Resume production when it\'s back up'); return reloadPipe(STATE.pipeCode); })
+      .then(function(){ render(); })
+      .catch(function(err){ toast(err.message, true); bobbinBtn.disabled = false; });
+  });
+  startProdTick(wo, pipe, sec);
+}
+
 function liveThicknessCalc(sec){
   var od = num(E('tcOD').value);
   var pts = qsa('.tPoint').map(function(inp){ return num(inp.value); }).filter(function(v){ return v!==null; });
@@ -1059,7 +1293,7 @@ function bindOperator(){
   if (cancelBtn) cancelBtn.addEventListener('click', function(){ E('completeForm').style.display = 'none'; E('completeRow').style.display = 'flex'; });
   var confirmBtn = E('confirmCompleteBtn');
   if (confirmBtn) confirmBtn.addEventListener('click', function(){
-    if (!confirm('Mark '+sec+' complete for pipe '+STATE.pipeCode+'? This will email the report.')) return;
+    if (!confirm('Mark '+sec+' complete for reel '+STATE.pipeCode+'? This will email the report.')) return;
     confirmBtn.disabled = true;
     apiPost('setSectionStatus', {pipeCode: STATE.pipeCode, section: sec, status: 'Complete', actualLength: E('completeLength').value})
       .then(function(){ toast(sec+' marked complete'); return reloadPipe(STATE.pipeCode); })
@@ -1067,18 +1301,21 @@ function bindOperator(){
       .catch(function(err){ toast(err.message, true); confirmBtn.disabled = false; });
   });
 
+  bindProductionTimer(STATE.workOrder, STATE.pipe, sec);
+
   E('submitReadingBtn').addEventListener('click', function(){
     var operator = E('opName').value.trim();
     if (!operator){ toast('Operator name is required', true); return; }
     setOperatorName(operator);
     var ts = new Date(E('rdTime').value).toISOString();
     var odVal = num(E('rdOD').value);
+    var footageVal = E('rdFootage') ? E('rdFootage').value : '';
     var jobs = [];
     if (sec === 'Braidline'){
       var pitchVal = num(E('rdPitch') ? E('rdPitch').value : null);
       if (pitchVal !== null) jobs.push(apiPost('addReading', {pipeCode:STATE.pipeCode, section:sec, type:'Pitch', value:pitchVal, operator:operator, timestamp:ts}));
     }
-    if (odVal !== null) jobs.push(apiPost('addReading', {pipeCode:STATE.pipeCode, section:sec, type:'OD', value:odVal, operator:operator, timestamp:ts}));
+    if (odVal !== null) jobs.push(apiPost('addReading', {pipeCode:STATE.pipeCode, section:sec, type:'OD', value:odVal, operator:operator, timestamp:ts, footage:footageVal}));
     if (!jobs.length){ toast('Enter at least one value', true); return; }
     E('submitReadingBtn').disabled = true;
     Promise.all(jobs).then(function(results){
@@ -1203,12 +1440,12 @@ function workOrderGroupHtml(g){
   }).join('');
   return '<section class="card">' +
     '<div class="row"><h2 class="wo-header" data-wodash="'+esc(g.workOrderCode)+'" style="border:none;margin:0;padding:0">'+esc(g.workOrderCode)+'</h2>' +
-    '<span class="pill inprogress">'+g.pipes.length+' pipe'+(g.pipes.length===1?'':'s')+'</span>' +
+    '<span class="pill inprogress">'+g.pipes.length+' reel'+(g.pipes.length===1?'':'s')+'</span>' +
     problemBadge(g.openProblems) +
     '<span class="muted">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</span></div>' +
     lengthProgressHtml(g) +
-    '<table style="margin-top:6px"><thead><tr><th class="l">Pipe</th><th>Baseline</th><th>Braidline</th><th>Coverline</th><th class="l">Last reading</th></tr></thead><tbody>' + pipeRows + '</tbody></table>' +
-    '<div class="row" style="margin-top:8px"><button class="btn sm" data-addpipe="'+esc(g.workOrderCode)+'">+ Add pipe to this work order</button></div>' +
+    '<table style="margin-top:6px"><thead><tr><th class="l">Reel</th><th>Baseline</th><th>Braidline</th><th>Coverline</th><th class="l">Last reading</th></tr></thead><tbody>' + pipeRows + '</tbody></table>' +
+    '<div class="row" style="margin-top:8px"><button class="btn sm" data-addpipe="'+esc(g.workOrderCode)+'">+ Add reel to this work order</button></div>' +
   '</section>';
 }
 
@@ -1227,7 +1464,7 @@ function renderDashboard(d){
     '<div class="muted no-print" style="margin:4px 0 14px;font-size:10px">Auto-refreshing every 20s &middot; server time '+fmtTime(d.serverTime)+'</div>' +
     '<section class="card"><h2>Recently completed</h2>' +
     (d.recentComplete.length ? d.recentComplete.map(function(g){
-      return '<div class="row"><b>'+esc(g.workOrderCode)+'</b> <span class="muted">'+esc(g.customer||'')+' &middot; '+g.pipes.length+' pipe(s)</span></div>';
+      return '<div class="row"><b>'+esc(g.workOrderCode)+'</b> <span class="muted">'+esc(g.customer||'')+' &middot; '+g.pipes.length+' reel(s)</span></div>';
     }).join('') : '<p class="muted">None yet.</p>') +
     '</section>';
 
@@ -1239,6 +1476,121 @@ function renderDashboard(d){
   });
   qsa('[data-wodash]', root).forEach(function(h){
     h.addEventListener('click', function(){ go('woDashboard', {workOrderCode: h.dataset.wodash}); });
+  });
+}
+
+/* ============================= TIMERS (active production, grouped by section) ============================= */
+function viewTimers(){
+  return '<div id="timersRoot"><p class="muted">Loading&hellip;</p></div>';
+}
+
+function bindTimers(){
+  loadTimers();
+  STATE.dashTimer = setInterval(loadTimers, 20000);
+}
+
+function loadTimers(){
+  apiGet('dashboard').then(function(d){ renderTimers(d); })
+    .catch(function(err){ var r = E('timersRoot'); if (r) r.innerHTML = '<p class="flag">'+esc(err.message)+'</p>'; });
+}
+
+function renderTimers(d){
+  var root = E('timersRoot');
+  if (!root) return;
+  var bySection = {Baseline:[], Braidline:[], Coverline:[]};
+  d.active.forEach(function(g){
+    g.pipes.forEach(function(p){
+      if (p.prodSection && p.prodTiming) bySection[p.prodSection].push({workOrderCode:g.workOrderCode, customer:g.customer, pipeCode:p.pipeCode, section:p.prodSection, timing:p.prodTiming});
+    });
+  });
+
+  function sectionBlock(sec){
+    var list = bySection[sec];
+    return '<section class="card"><h2>'+sec+' ('+list.length+')</h2>' +
+      (list.length ? list.map(timerCardHtml).join('') : '<p class="muted">No active reels on this line right now.</p>') +
+    '</section>';
+  }
+
+  root.innerHTML = '<h1 style="font-size:13px;margin-bottom:10px">Active production timers</h1>' +
+    sectionBlock('Baseline') + sectionBlock('Braidline') + sectionBlock('Coverline') +
+    '<div class="muted" style="font-size:10px">Auto-refreshing every 20s &middot; server time '+fmtTime(d.serverTime)+'</div>';
+
+  bindTimerCards(root);
+}
+
+function timerCardHtml(e){
+  var t = e.timing;
+  var pct = t.expectedMinutes !== '' ? Math.round(100*t.runningMinutes/t.expectedMinutes) : null;
+  var key = e.pipeCode + '|' + e.section;
+  return '<div class="problemcard'+(t.status==='down'?' open':'')+'">' +
+    '<div class="row"><b>'+esc(e.pipeCode)+'</b> <span class="muted">'+esc(e.workOrderCode)+' &middot; '+esc(e.customer)+'</span>' +
+    '<span class="spacer"></span>' +
+    (t.status==='running' ? '<span class="pill inprogress">Running</span>' : '<span class="pill" style="background:var(--crit)">Down &mdash; '+esc(t.downReason)+'</span>') +
+    '</div>' +
+    '<div class="row" id="timerRow-'+esc(key)+'" style="margin-top:6px">' +
+      '<span class="muted">'+fmtHrsMin(t.runningMinutes)+(t.expectedMinutes!==''?' / '+fmtHrsMin(t.expectedMinutes)+(pct!==null?' ('+pct+'%)':''):'')+'</span>' +
+      '<span class="spacer"></span>' +
+      (t.status==='running'
+        ? '<button class="btn sm danger" data-stoptimer="'+esc(key)+'">Stop</button>'
+        : '<button class="btn sm pri" data-resumetimer="'+esc(key)+'" data-pipe="'+esc(e.pipeCode)+'" data-sec="'+esc(e.section)+'">Resume</button>') +
+      '<button class="btn sm" data-openpipe="'+esc(e.pipeCode)+'" data-opensec="'+esc(e.section)+'">Open reel</button>' +
+    '</div>' +
+    (t.status==='running' ? '<div class="row" id="timerForm-'+esc(key)+'" style="display:none;margin-top:8px">' +
+      '<div class="fld" style="max-width:160px"><label>Reason</label><select id="timerReason-'+esc(key)+'">'+DOWNTIME_REASONS.map(function(r){return '<option>'+esc(r)+'</option>';}).join('')+'</select></div>' +
+      '<div class="fld" style="flex:1;min-width:120px"><label>Notes</label><input id="timerNotes-'+esc(key)+'"></div>' +
+      '<button class="btn sm" data-canceltimer="'+esc(key)+'" style="align-self:flex-end">Cancel</button>' +
+      '<button class="btn sm danger" data-confirmtimer="'+esc(key)+'" data-pipe="'+esc(e.pipeCode)+'" data-sec="'+esc(e.section)+'" style="align-self:flex-end">Confirm stop</button>' +
+    '</div>' : '') +
+  '</div>';
+}
+
+function timerOperatorName(){
+  var operator = getOperatorName();
+  if (operator) return operator;
+  var n = prompt('Your name:', '');
+  if (n) setOperatorName(n);
+  return n || '';
+}
+
+function bindTimerCards(root){
+  qsa('[data-stoptimer]', root).forEach(function(b){
+    b.addEventListener('click', function(){
+      var key = b.dataset.stoptimer;
+      E('timerForm-'+key).style.display = 'flex';
+      E('timerRow-'+key).style.display = 'none';
+    });
+  });
+  qsa('[data-canceltimer]', root).forEach(function(b){
+    b.addEventListener('click', function(){
+      var key = b.dataset.canceltimer;
+      E('timerForm-'+key).style.display = 'none';
+      E('timerRow-'+key).style.display = 'flex';
+    });
+  });
+  qsa('[data-confirmtimer]', root).forEach(function(b){
+    b.addEventListener('click', function(){
+      var key = b.dataset.confirmtimer, pipeCode = b.dataset.pipe, sec = b.dataset.sec;
+      var operator = timerOperatorName();
+      if (!operator) return;
+      b.disabled = true;
+      apiPost('startDowntime', {pipeCode: pipeCode, section: sec, reasonCode: E('timerReason-'+key).value, notes: E('timerNotes-'+key).value.trim(), operator: operator})
+        .then(function(){ toast('Downtime started'); loadTimers(); })
+        .catch(function(err){ toast(err.message, true); b.disabled = false; });
+    });
+  });
+  qsa('[data-resumetimer]', root).forEach(function(b){
+    b.addEventListener('click', function(){
+      var pipeCode = b.dataset.pipe, sec = b.dataset.sec;
+      var operator = timerOperatorName();
+      if (!operator) return;
+      b.disabled = true;
+      apiPost('endDowntime', {pipeCode: pipeCode, section: sec, operator: operator})
+        .then(function(){ toast('Production resumed'); loadTimers(); })
+        .catch(function(err){ toast(err.message, true); b.disabled = false; });
+    });
+  });
+  qsa('[data-openpipe]', root).forEach(function(b){
+    b.addEventListener('click', function(){ go('operator', {pipeCode: b.dataset.openpipe, section: b.dataset.opensec}); });
   });
 }
 
@@ -1427,8 +1779,8 @@ function loadWoDashboard(){
     var all = d.active.concat(d.recentComplete);
     var g = all.filter(function(x){ return x.workOrderCode === STATE.workOrderCode; })[0];
     if (!g){
-      E('wodRoot').innerHTML = '<section class="card"><p class="flag">No pipes found for work order '+esc(STATE.workOrderCode)+'.</p>' +
-        '<button class="btn" id="wodAddPipeBtn2">+ Add first pipe</button></section>';
+      E('wodRoot').innerHTML = '<section class="card"><p class="flag">No reels found for work order '+esc(STATE.workOrderCode)+'.</p>' +
+        '<button class="btn" id="wodAddPipeBtn2">+ Add first reel</button></section>';
       var b = E('wodAddPipeBtn2');
       if (b) b.addEventListener('click', function(){ go('addPipe', {workOrderCode: STATE.workOrderCode}); });
       return;
@@ -1467,24 +1819,24 @@ function renderWoDashboard(g, serverTime){
   root.innerHTML =
     '<div class="row" style="margin-bottom:10px">' +
       '<div><b style="font-size:20px">'+esc(g.workOrderCode)+'</b> ' +
-      '<span class="pill inprogress">'+g.pipes.length+' pipe'+(g.pipes.length===1?'':'s')+'</span> ' +
+      '<span class="pill inprogress">'+g.pipes.length+' reel'+(g.pipes.length===1?'':'s')+'</span> ' +
       problemBadge(g.openProblems) + ' ' +
       '<span class="muted">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</span></div>' +
       '<span class="spacer"></span>' +
-      '<button class="btn sm" id="wodAddPipeBtn">+ Add pipe</button>' +
+      '<button class="btn sm" id="wodAddPipeBtn">+ Add reel</button>' +
       '<button class="btn sm" id="wodEditBtn">Edit targets</button>' +
       '<button class="btn sm" id="wodBackBtn">Back to dashboard</button>' +
     '</div>' +
     '<section class="card">' +
       lengthProgressHtml(g) +
       '<div class="kpis" style="margin-top:8px">' +
-        '<div class="kpi"><b>Total pipes</b><span>'+g.pipes.length+'</span></div>' +
+        '<div class="kpi"><b>Total reels</b><span>'+g.pipes.length+'</span></div>' +
         '<div class="kpi"><b>Complete</b><span>'+counts.complete+'</span></div>' +
         '<div class="kpi"><b>In progress</b><span>'+counts.inprogress+'</span></div>' +
         '<div class="kpi"><b>Not started</b><span>'+counts.notstarted+'</span></div>' +
       '</div>' +
       '<div class="pipecard-grid">' + cardsHtml + '</div>' +
-      '<div class="muted" style="margin-top:10px;font-size:10px">Auto-refreshing every 20s &middot; server time '+fmtTime(serverTime)+' &middot; click a pipe for its full detail/chart</div>' +
+      '<div class="muted" style="margin-top:10px;font-size:10px">Auto-refreshing every 20s &middot; server time '+fmtTime(serverTime)+' &middot; click a reel for its full detail/chart</div>' +
     '</section>';
 
   E('wodBackBtn').addEventListener('click', function(){ go('dashboard'); });
@@ -1514,6 +1866,7 @@ function bindTV(){
   document.documentElement.setAttribute('data-theme', 'dark');
   document.body.classList.add('tv-active');
   STATE.tvPage = 0;
+  STATE.tvDrillWO = null; STATE.tvDrillPipe = null; STATE.tvSection = null;
   loadTVBoard();
   STATE.dashTimer = setInterval(loadTVBoard, 20000);
   STATE.tvPageTimer = setInterval(advanceTVPage, 8000);
@@ -1528,6 +1881,10 @@ function leaveTVIfActive(){
   stopTVClock();
 }
 
+function tvGoBoard(){ STATE.tvDrillWO = null; STATE.tvDrillPipe = null; STATE.tvSection = null; loadTVBoard(); }
+function tvGoWorkOrder(code){ STATE.tvDrillWO = code; STATE.tvDrillPipe = null; STATE.tvSection = null; loadTVBoard(); }
+function tvGoPipe(code){ STATE.tvDrillPipe = code; STATE.tvSection = null; loadTVBoard(); }
+
 function startTVClock(){
   stopTVClock();
   var tick = function(){ var el = E('tvClock'); if (el) el.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); };
@@ -1537,14 +1894,34 @@ function startTVClock(){
 function stopTVClock(){ if (tvClockTimer){ clearInterval(tvClockTimer); tvClockTimer = null; } }
 
 function loadTVBoard(){
-  apiGet('dashboard').then(function(d){ renderTVBoard(d); })
-    .catch(function(err){
+  if (STATE.tvDrillPipe){
+    apiGet('getPipe', {pipeCode: STATE.tvDrillPipe}).then(function(data){
+      STATE.tvPipeData = data;
+      if (!STATE.tvSection) STATE.tvSection = firstOpenSection(data.pipe);
+      renderTVPipeChart(data);
+    }).catch(function(err){
       var r = E('tvRoot');
       if (r) r.innerHTML = '<div class="tv-empty flag">Could not reach the server:<br>'+esc(err.message)+'</div>';
     });
+    return;
+  }
+  apiGet('dashboard').then(function(d){
+    STATE.tvLastData = d;
+    if (STATE.tvDrillWO){
+      var g = d.active.concat(d.recentComplete).filter(function(x){ return x.workOrderCode === STATE.tvDrillWO; })[0];
+      if (!g){ tvGoBoard(); return; }
+      renderTVWorkOrder(g);
+    } else {
+      renderTVBoard(d);
+    }
+  }).catch(function(err){
+    var r = E('tvRoot');
+    if (r) r.innerHTML = '<div class="tv-empty flag">Could not reach the server:<br>'+esc(err.message)+'</div>';
+  });
 }
 
 function advanceTVPage(){
+  if (STATE.tvDrillWO || STATE.tvDrillPipe) return;
   if (!STATE.tvLastData) return;
   var count = Math.max(1, Math.ceil(STATE.tvLastData.active.length / TV_PAGE_SIZE));
   STATE.tvPage = (STATE.tvPage + 1) % count;
@@ -1568,7 +1945,7 @@ function renderTVBoard(d){
   root.innerHTML =
     '<div class="tv-header">' +
       '<div><div class="tv-title">SRTP Production Floor</div>' +
-      '<div class="tv-sub">'+active.length+' active work order'+(active.length===1?'':'s')+' &middot; '+totalPipes+' pipe'+(totalPipes===1?'':'s')+' running</div></div>' +
+      '<div class="tv-sub">'+active.length+' active work order'+(active.length===1?'':'s')+' &middot; '+totalPipes+' reel'+(totalPipes===1?'':'s')+' running</div></div>' +
       '<div class="tv-clock" id="tvClock">&nbsp;</div>' +
     '</div>' +
     '<div class="tv-grid">' + cardsHtml + '</div>' +
@@ -1576,6 +1953,21 @@ function renderTVBoard(d){
 
   var clockEl = E('tvClock');
   if (clockEl) clockEl.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+
+  qsa('[data-tvwo]', root).forEach(function(el){
+    el.addEventListener('click', function(){ tvGoWorkOrder(el.dataset.tvwo); });
+  });
+}
+
+function tvTimerLine(p){
+  var t = p.prodTiming;
+  if (!t) return '';
+  var pct = t.expectedMinutes !== '' ? Math.round(100*t.runningMinutes/t.expectedMinutes) : null;
+  var statusTxt = t.status==='running'
+    ? '<span style="color:var(--good)">&#9679; Running</span>'
+    : '<span style="color:var(--crit)">&#9679; Down ('+esc(t.downReason)+')</span>';
+  return '<div class="tv-pipe-timer">'+statusTxt+' &middot; '+fmtHrsMin(t.runningMinutes)+
+    (t.expectedMinutes!==''?' / '+fmtHrsMin(t.expectedMinutes)+(pct!==null?' ('+pct+'%)':''):'')+'</div>';
 }
 
 function tvCardHtml(g){
@@ -1591,17 +1983,107 @@ function tvCardHtml(g){
       '<div class="tv-pipe-code">'+esc(p.pipeCode)+(p.openProblems?' <span class="tv-issue">&#9888; '+p.openProblems+'</span>':'')+'</div>' +
       '<div class="tv-pipe-sec">'+esc(curSection)+(stale?' &middot; STALE':'')+'</div>' +
       (lr ? '<div class="tv-pipe-val '+valueClass+'">'+esc(lr.Value)+'"</div>' : '<div class="tv-pipe-val muted">&mdash;</div>') +
+      tvTimerLine(p) +
     '</div>';
   }).join('');
 
-  return '<div class="tv-card">' +
-    '<div class="tv-code">'+esc(g.workOrderCode)+' <span class="tv-pipecount">'+g.pipes.length+' pipe'+(g.pipes.length===1?'':'s')+'</span>' +
+  return '<div class="tv-card tv-card-click" data-tvwo="'+esc(g.workOrderCode)+'">' +
+    '<div class="tv-code">'+esc(g.workOrderCode)+' <span class="tv-pipecount">'+g.pipes.length+' reel'+(g.pipes.length===1?'':'s')+'</span>' +
     (g.openProblems ? ' <span class="tv-issue">&#9888; '+g.openProblems+'</span>' : '') + '</div>' +
     '<div class="tv-customer">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</div>' +
     (pct!==null ? '<div class="tv-lenbar"><div class="tv-lenfill" style="width:'+pct+'%"></div></div>' +
       '<div class="tv-lenlabel">'+g.producedLength+' / '+g.projectLength+' ft ('+pct+'%)</div>' : '') +
     '<div class="tv-pipelist">' + pipesHtml + '</div>' +
   '</div>';
+}
+
+function renderTVWorkOrder(g){
+  var root = E('tvRoot');
+  if (!root) return;
+  var target = Number(g.projectLength);
+  var pct = (g.projectLength && !isNaN(target) && target > 0) ? Math.max(0, Math.min(100, Math.round(100 * g.producedLength / target))) : null;
+
+  var pipesHtml = g.pipes.map(function(p){
+    var lr = p.lastReading;
+    var stale = lr && (Date.now() - new Date(lr.Timestamp).getTime()) > 75*60000 && p.overallStatus !== 'Complete';
+    var valueClass = lr ? (lr.InTol==='Y' ? 'good' : lr.InTol==='N' ? 'bad' : '') : '';
+    var curSection = p.cvStatus==='In progress' ? 'Coverline' : p.brStatus==='In progress' ? 'Braidline' : p.blStatus==='In progress' ? 'Baseline'
+      : (p.overallStatus==='Complete' ? 'Complete' : 'Not started');
+    return '<div class="tv-pipe tv-pipe-click'+(stale||p.openProblems?' stale':'')+'" data-tvpipe="'+esc(p.pipeCode)+'">' +
+      '<div class="tv-pipe-code">'+esc(p.pipeCode)+(p.openProblems?' <span class="tv-issue">&#9888; '+p.openProblems+'</span>':'')+'</div>' +
+      '<div class="tv-pipe-sec">'+esc(curSection)+(stale?' &middot; STALE':'')+'</div>' +
+      (lr ? '<div class="tv-pipe-val '+valueClass+'">'+esc(lr.Value)+'"</div>' : '<div class="tv-pipe-val muted">&mdash;</div>') +
+      tvTimerLine(p) +
+    '</div>';
+  }).join('');
+
+  root.innerHTML =
+    '<div class="tv-header">' +
+      '<div><button class="tv-backbtn" id="tvBackToBoard">&larr; All work orders</button>' +
+        '<div class="tv-title" style="margin-top:6px">'+esc(g.workOrderCode)+'</div>' +
+        '<div class="tv-sub">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+' &middot; '+g.pipes.length+' reel'+(g.pipes.length===1?'':'s')+'</div></div>' +
+      '<div class="tv-clock" id="tvClock">&nbsp;</div>' +
+    '</div>' +
+    (pct!==null ? '<div class="tv-lenbar" style="max-width:640px"><div class="tv-lenfill" style="width:'+pct+'%"></div></div>' +
+      '<div class="tv-lenlabel">'+g.producedLength+' / '+g.projectLength+' ft ('+pct+'%)</div>' : '') +
+    '<div class="tv-pipelist" style="margin-top:20px">' + (pipesHtml || '<div class="tv-empty">No reels on this work order.</div>') + '</div>';
+
+  var clockEl = E('tvClock');
+  if (clockEl) clockEl.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+
+  E('tvBackToBoard').addEventListener('click', tvGoBoard);
+  qsa('[data-tvpipe]', root).forEach(function(el){
+    el.addEventListener('click', function(){ tvGoPipe(el.dataset.tvpipe); });
+  });
+}
+
+function renderTVPipeChart(data){
+  var root = E('tvRoot');
+  if (!root) return;
+  var pipe = data.pipe, wo = data.workOrder, sec = STATE.tvSection;
+  var prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
+
+  function odSeries(s){ return data.readings.filter(function(r){ return r.Section===s && r.Type==='OD'; }).sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); }); }
+  function statsOf(vals){ if(!vals.length) return null; return {min:Math.min.apply(null,vals), max:Math.max.apply(null,vals), avg:round4(vals.reduce(function(a,b){return a+b;},0)/vals.length)}; }
+  function targetTol(p){
+    var t = wo[p+'_TargetOD'], tol = wo[p+'_ODTol'];
+    return (t!=='' && t!==undefined && tol!=='' && tol!==undefined) ? {target:Number(t), tol:Number(tol)} : null;
+  }
+
+  var series = odSeries(sec);
+  var vals = series.map(function(r){ return Number(r.Value); });
+  var s = statsOf(vals);
+  var tt = targetTol(prefix);
+  var chartProblems = (data.problemReports || []).filter(function(p){ return p.Section === sec; });
+
+  root.innerHTML =
+    '<div class="tv-header">' +
+      '<div><button class="tv-backbtn" id="tvBackToWO">&larr; '+esc(pipe.WorkOrderCode)+'</button>' +
+        '<div class="tv-title" style="margin-top:6px">'+esc(pipe.PipeCode)+'</div>' +
+        '<div class="tv-sub">'+esc(wo.Customer||'')+(wo.ProductCode?' &middot; '+esc(wo.ProductCode):'')+'</div></div>' +
+      '<div class="tv-clock" id="tvClock">&nbsp;</div>' +
+    '</div>' +
+    '<div class="tv-tabs">' +
+      ['Baseline','Braidline','Coverline'].map(function(s2){
+        var st = pipe[(s2==='Baseline'?'BL':s2==='Braidline'?'BR':'CV')+'_Status'];
+        return '<button class="tv-tabbtn'+(s2===sec?' active':'')+'" data-tvsec="'+s2+'">'+s2+' '+pillHtml(st)+'</button>';
+      }).join('') +
+    '</div>' +
+    (s ? '<div class="tv-kpis">' +
+        '<div class="tv-kpi"><b>Readings</b><span>'+series.length+'</span></div>' +
+        '<div class="tv-kpi"><b>Min</b><span>'+s.min+'"</span></div>' +
+        '<div class="tv-kpi"><b>Max</b><span>'+s.max+'"</span></div>' +
+        '<div class="tv-kpi"><b>Avg</b><span>'+s.avg+'"</span></div>' +
+      '</div>' + odChartSvg(series, tt, chartProblems)
+      : '<div class="tv-empty">No OD readings yet for '+sec+'.</div>');
+
+  var clockEl = E('tvClock');
+  if (clockEl) clockEl.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+
+  E('tvBackToWO').addEventListener('click', function(){ tvGoWorkOrder(pipe.WorkOrderCode); });
+  qsa('[data-tvsec]', root).forEach(function(b){
+    b.addEventListener('click', function(){ STATE.tvSection = b.dataset.tvsec; renderTVPipeChart(STATE.tvPipeData); });
+  });
 }
 
 /* ============================= SCANNER ============================= */
@@ -1653,6 +2135,7 @@ function bindView(){
   else if (STATE.view === 'dashboard') bindDashboard();
   else if (STATE.view === 'woDashboard') bindWoDashboard();
   else if (STATE.view === 'pipeDetail') bindPipeDetail();
+  else if (STATE.view === 'timers') bindTimers();
   else if (STATE.view === 'tv') bindTV();
 }
 
