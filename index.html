@@ -118,6 +118,13 @@
 
   .qrbox{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px;}
   .qrbox svg{width:200px;height:200px;background:#fff;padding:8px;border-radius:6px;}
+
+  .loginwrap{max-width:340px;margin:8vh auto 0;}
+  .loginwrap .card{padding:22px 20px;}
+  .loginwrap .btn{width:100%;margin-top:12px;padding:11px 14px;}
+  .loginwrap .fld{margin-bottom:10px;}
+  .keybox{font:600 12px/1.5 Consolas,"Courier New",monospace;word-break:break-all;
+    background:var(--band);border:1px solid var(--line);border-radius:4px;padding:8px 10px;}
   .tagmeta{text-align:center;font-size:11px;}
 
   .lenbar{background:var(--hair);border-radius:4px;height:8px;overflow:hidden;margin-bottom:4px;}
@@ -225,11 +232,7 @@
     <div class="sub">Baseline &middot; Braidline &middot; Coverline</div>
   </div>
   <span id="status">checking&hellip;</span>
-  <nav>
-    <button data-nav="home">Home</button>
-    <button data-nav="dashboard">Dashboard</button>
-    <button data-nav="timers">Timers</button>
-  </nav>
+  <nav id="mainNav"></nav>
 </header>
 
 <main id="app"></main>
@@ -249,10 +252,55 @@
 // Paste your deployed Apps Script Web App URL here (ends in /exec).
 // Can also be set per-browser from the Settings row on Home for testing.
 var DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbz2HsHOh07yVRD6WJoDIPfHlWxysj4Scwr42g1WTgmshCs8r_qr1raS7o5i-cgTZG_-Jg/exec';
-var API_URL = localStorage.getItem('srtp_api_url') || DEFAULT_API_URL;
+
+// Reading localStorage THROWS (not returns null) when site data is blocked — private
+// browsing, a locked-down tablet, a file:// or data: URL. Unguarded, that kills the
+// whole script at load and the page comes up blank, so every access goes through here.
+// The cost of a blocked store is only that the session isn't remembered across reloads.
+function lsGet(key){ try { return localStorage.getItem(key); } catch (e) { return null; } }
+function lsSet(key, val){ try { localStorage.setItem(key, val); } catch (e) { /* not persisted */ } }
+function lsDel(key){ try { localStorage.removeItem(key); } catch (e) { /* nothing to do */ } }
+
+var API_URL = lsGet('srtp_api_url') || DEFAULT_API_URL;
 
 var BASELINE_POINTS = 16;
 var COVERLINE_POINTS = 12;
+
+/* ============================= AUTH =============================
+ * Two roles, and the role is the whole model (mirrored in Code.gs's ACTION_ROLES,
+ * which is what actually enforces it — everything here is only about not showing
+ * people buttons that would be refused anyway):
+ *
+ *   Admin    — the controller. Everything: work orders, reels, tags, the plant-wide
+ *              Dashboard / TV view / Timers, and the Admin panel for logins.
+ *   Operator — the floor. One reel at a time and nothing else. The work order's
+ *              reference targets still show inside the reel (that's what they build
+ *              to), but there's no route to the dashboard, to another work order,
+ *              or to editing any target.
+ *
+ * Operators get in by scanning the reel's printed QR tag: the tag URL carries the
+ * shop operator key, and qrLogin trades it for a ~shift-long session, so nobody on
+ * the floor types anything. The key is stripped from the address bar right after, so
+ * it isn't left sitting in a URL to be copied or shared out of the plant.
+ */
+var AUTH = {
+  token: lsGet('srtp_token') || '',
+  account: null
+};
+try { AUTH.account = JSON.parse(lsGet('srtp_account') || 'null'); } catch (e) { AUTH.account = null; }
+
+function isAdmin(){ return !!(AUTH.account && AUTH.account.role === 'Admin'); }
+function isOperator(){ return !!(AUTH.account && AUTH.account.role === 'Operator'); }
+function isSignedIn(){ return !!(AUTH.token && AUTH.account); }
+
+function setAuth(token, account){
+  AUTH.token = token || '';
+  AUTH.account = account || null;
+  if (AUTH.token){ lsSet('srtp_token', AUTH.token); } else { lsDel('srtp_token'); }
+  if (AUTH.account){ lsSet('srtp_account', JSON.stringify(AUTH.account)); } else { lsDel('srtp_account'); }
+}
+
+function clearAuth(){ setAuth('', null); }
 
 /* ============================= STATE ============================= */
 var STATE = {
@@ -263,27 +311,45 @@ var STATE = {
   section: 'Baseline',
   dashTimer: null,
   tvPage: 0, tvPageTimer: null, tvDrillWO: null, tvDrillPipe: null, tvSection: null, tvPipeData: null,
-  pdCode: null, pdSection: null, pdData: null
+  pdCode: null, pdSection: null, pdData: null,
+  loginError: '', operatorKey: '', accounts: null, adminError: ''
 };
 
 /* ============================= API ============================= */
+// The server answers code:'session_invalid' when the token is missing/expired/revoked.
+// Whatever call hit it, the response is the same: drop the stale session and show the
+// login, rather than letting a background poll quietly fail forever behind a dead view.
+function handleApiFailure(j){
+  if (j && j.code === 'session_invalid'){
+    clearAuth();
+    STATE.loginError = 'Your session expired — sign in again.';
+    go('login');
+    var e = new Error('Session expired');
+    e.sessionExpired = true;
+    throw e;
+  }
+  throw new Error((j && j.error) || 'Request failed');
+}
+
 function apiGet(action, params){
-  params = params || {};
+  params = Object.assign({}, params || {});
+  if (AUTH.token) params.token = AUTH.token;
   var qs = Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
   var url = API_URL + '?action=' + encodeURIComponent(action) + (qs ? '&' + qs : '');
   return fetch(url).then(function(r){ return r.json(); }).then(function(j){
-    if (!j.ok) throw new Error(j.error || 'Request failed');
+    if (!j.ok) return handleApiFailure(j);
     return j.data;
   });
 }
 function apiPost(action, body){
   var payload = Object.assign({action: action}, body || {});
+  if (AUTH.token && payload.token === undefined) payload.token = AUTH.token;
   return fetch(API_URL, {
     method: 'POST',
     headers: {'Content-Type': 'text/plain;charset=utf-8'},
     body: JSON.stringify(payload)
   }).then(function(r){ return r.json(); }).then(function(j){
-    if (!j.ok) throw new Error(j.error || 'Request failed');
+    if (!j.ok) return handleApiFailure(j);
     return j.data;
   });
 }
@@ -295,10 +361,19 @@ function checkConnection(){
     el.className = 'bad';
     return;
   }
+  if (!isSignedIn()){
+    el.textContent = 'Signed out';
+    el.className = '';
+    return;
+  }
+  // 'ping' needs a token like everything else, so a failure here is ambiguous between
+  // "network down" and "session died". handleApiFailure already routes the expired case
+  // to the login screen; this only has to avoid mislabelling it as an outage.
   apiGet('ping').then(function(){
     el.textContent = 'Connected';
     el.className = 'ok';
-  }).catch(function(){
+  }).catch(function(err){
+    if (err && err.sessionExpired) return;
     el.textContent = 'Offline / unreachable';
     el.className = 'bad';
   });
@@ -340,8 +415,8 @@ function toast(msg, isErr){
   clearTimeout(t._h);
   t._h = setTimeout(function(){ t.style.display='none'; }, 3500);
 }
-function getOperatorName(){ return localStorage.getItem('srtp_operator_name') || ''; }
-function setOperatorName(v){ localStorage.setItem('srtp_operator_name', v || ''); }
+function getOperatorName(){ return lsGet('srtp_operator_name') || ''; }
+function setOperatorName(v){ lsSet('srtp_operator_name', v || ''); }
 
 function pointLabel(section, i){
   if (section === 'Coverline'){
@@ -422,9 +497,20 @@ function reloadPipe(pipeCode){
 }
 
 /* ============================= NAV / RENDER ============================= */
+// Views only an Admin may open. The server refuses the underlying calls regardless
+// (ACTION_ROLES in Code.gs), so this is about never showing an operator a dead end —
+// including if one hand-edits the URL or a stale button survives a role change.
+var ADMIN_VIEWS = ['controller', 'controllerNew', 'addPipe', 'tagPrinted',
+                   'dashboard', 'woDashboard', 'pipeDetail', 'timers', 'tv', 'admin'];
+
 function go(view, opts){
   leaveTVIfActive();
   stopProdTick();
+  if (!isSignedIn() && view !== 'login') view = 'login';
+  if (view !== 'login' && !isAdmin() && ADMIN_VIEWS.indexOf(view) >= 0){
+    toast('That area is for the controller only', true);
+    view = 'home';
+  }
   STATE.view = view;
   if (opts && opts.pipeCode !== undefined) STATE.pipeCode = opts.pipeCode;
   if (opts && opts.workOrderCode !== undefined) STATE.workOrderCode = opts.workOrderCode;
@@ -433,12 +519,30 @@ function go(view, opts){
   render();
 }
 
-function render(){
+function renderNav(){
+  var nav = E('mainNav');
+  if (!isSignedIn()){ nav.innerHTML = ''; return; }
   var dashLike = STATE.view === 'dashboard' || STATE.view === 'woDashboard' || STATE.view === 'pipeDetail';
-  var navActive = STATE.view === 'timers' ? 'timers' : (dashLike ? 'dashboard' : 'home');
-  qsa('nav button').forEach(function(b){ b.classList.toggle('active', b.dataset.nav === navActive); });
+  var navActive = STATE.view === 'timers' ? 'timers' :
+                  STATE.view === 'admin' ? 'admin' :
+                  (dashLike ? 'dashboard' : 'home');
+  var items = isAdmin()
+    ? [['home','Home'], ['dashboard','Dashboard'], ['timers','Timers'], ['admin','Admin']]
+    : [['home','Open a reel']];
+  nav.innerHTML =
+    items.map(function(it){
+      return '<button data-nav="'+it[0]+'"'+(it[0]===navActive?' class="active"':'')+'>'+esc(it[1])+'</button>';
+    }).join('') +
+    '<button id="logoutBtn" title="'+esc(AUTH.account.name || AUTH.account.username)+'">Sign out</button>';
+  E('logoutBtn').addEventListener('click', logout);
+}
+
+function render(){
+  renderNav();
   var app = E('app');
-  if (STATE.view === 'home') app.innerHTML = viewHome();
+  if (STATE.view === 'login') app.innerHTML = viewLogin();
+  else if (STATE.view === 'admin') app.innerHTML = viewAdmin();
+  else if (STATE.view === 'home') app.innerHTML = viewHome();
   else if (STATE.view === 'controller') app.innerHTML = viewController(false);
   else if (STATE.view === 'controllerNew') app.innerHTML = viewController(true);
   else if (STATE.view === 'addPipe') app.innerHTML = viewAddPipe();
@@ -452,8 +556,281 @@ function render(){
   bindView();
 }
 
+/* ============================= LOGIN ============================= */
+function viewLogin(){
+  return '' +
+  '<div class="loginwrap">' +
+    '<section class="card">' +
+      '<h2>Sign in</h2>' +
+      '<div class="fld"><label>Username</label><input id="loginUser" autocomplete="username" autocapitalize="none"></div>' +
+      '<div class="fld"><label>Password</label><input id="loginPass" type="password" autocomplete="current-password"></div>' +
+      (STATE.loginError ? '<p class="flag" style="margin:6px 0 0">'+esc(STATE.loginError)+'</p>' : '') +
+      '<button class="btn pri" id="loginBtn">Sign in</button>' +
+      '<p class="muted" style="font-size:10.5px;margin:14px 0 0">Operators: scan the QR tag on the reel and you&rsquo;re signed in automatically &mdash; no password needed.</p>' +
+    '</section>' +
+    '<section class="card no-print">' +
+      '<h2>API URL</h2>' +
+      '<p class="muted" style="margin-top:0;font-size:10.5px">Only needs changing if this browser points at a different Apps Script deployment.</p>' +
+      '<div class="row">' +
+        '<div class="fld" style="flex:1"><input id="loginApiUrl" value="'+esc(API_URL==DEFAULT_API_URL?'':API_URL)+'" placeholder="'+esc(DEFAULT_API_URL)+'"></div>' +
+        '<button class="btn sm" id="loginSaveApiBtn" style="align-self:flex-end">Save</button>' +
+      '</div>' +
+    '</section>' +
+  '</div>';
+}
+
+function bindLogin(){
+  function submit(){
+    var u = E('loginUser').value.trim(), p = E('loginPass').value;
+    if (!u || !p){ STATE.loginError = 'Enter a username and password.'; render(); return; }
+    var btn = E('loginBtn');
+    btn.disabled = true;
+    // Sent without a token — 'login' is one of the server's PUBLIC_ACTIONS.
+    apiPost('login', {username: u, password: p})
+      .then(function(res){
+        setAuth(res.token, res.account);
+        STATE.loginError = '';
+        checkConnection();
+        go('home');
+      })
+      .catch(function(err){
+        STATE.loginError = err.message || 'Could not sign in.';
+        render();
+      });
+  }
+  E('loginBtn').addEventListener('click', submit);
+  ['loginUser','loginPass'].forEach(function(id){
+    E(id).addEventListener('keydown', function(ev){ if (ev.key === 'Enter') submit(); });
+  });
+  E('loginSaveApiBtn').addEventListener('click', function(){
+    var v = E('loginApiUrl').value.trim();
+    if (v){ lsSet('srtp_api_url', v); API_URL = v; } else { lsDel('srtp_api_url'); API_URL = DEFAULT_API_URL; }
+    toast('API URL saved');
+  });
+  E('loginUser').focus();
+}
+
+function logout(){
+  var token = AUTH.token;
+  clearAuth();
+  STATE.loginError = '';
+  STATE.operatorKey = ''; STATE.accounts = null;
+  STATE.pipe = null; STATE.workOrder = null; STATE.pipeCode = ''; STATE.workOrderCode = '';
+  // Fire-and-forget: the local session is already gone either way, so a failed
+  // round trip here must not leave the user staring at a signed-in screen.
+  apiPost('logout', {token: token}).catch(function(){});
+  checkConnection();
+  go('login');
+}
+
+/* Scanning a reel tag signs the browser in as an operator. The key rides in the tag's
+ * URL (?k=...); it is traded for a session and then scrubbed from the address bar, so
+ * it isn't left in history, in a screenshot of the browser, or in a copied link. */
+function tryQrLogin(key, pipeCode){
+  var app = E('app');
+  app.innerHTML = '<p class="muted" style="text-align:center;margin-top:8vh">Signing in from reel tag&hellip;</p>';
+  return apiPost('qrLogin', {key: key})
+    .then(function(res){
+      setAuth(res.token, res.account);
+      checkConnection();
+      if (pipeCode) return openReelForOperator(pipeCode);
+      go('home');
+    })
+    .catch(function(err){
+      clearAuth();
+      STATE.loginError = err.message || 'Could not sign in from that tag.';
+      go('login');
+    });
+}
+
+// Strips the operator key (and, for tidiness, the tag's wo hint) out of the visible URL
+// without reloading. The pipe code is left in place so a refresh still lands on the reel.
+function scrubKeyFromUrl(){
+  try {
+    var p = new URLSearchParams(location.search);
+    if (!p.has('k') && !p.has('wo')) return;
+    p.delete('k'); p.delete('wo');
+    var q = p.toString();
+    history.replaceState(null, '', location.pathname + (q ? '?' + q : ''));
+  } catch (e) { /* older browser — the key stays in the bar, nothing else breaks */ }
+}
+
+// The operator's one-and-only destination: the reel itself, on its first unfinished section.
+function openReelForOperator(pipeCode){
+  return apiGet('getPipe', {pipeCode: pipeCode})
+    .then(function(data){
+      applyPipeData(data);
+      STATE.pipeCode = pipeCode;
+      STATE.workOrderCode = data.pipe.WorkOrderCode;
+      go('operator', {pipeCode: pipeCode, section: firstOpenSection(data.pipe)});
+    })
+    .catch(function(err){
+      if (err && err.sessionExpired) return;
+      go('home');
+      var box = E('homeResult');
+      if (box) box.innerHTML = '<p class="flag">Could not open reel "'+esc(pipeCode)+'": '+esc(err.message)+'</p>';
+    });
+}
+
+/* ============================= ADMIN PANEL ============================= */
+function viewAdmin(){
+  return '<div id="adminRoot"><p class="muted">Loading&hellip;</p></div>';
+}
+
+function bindAdmin(){ loadAdmin(); }
+
+function loadAdmin(){
+  Promise.all([apiGet('listAccounts'), apiGet('getOperatorKey')])
+    .then(function(res){
+      STATE.accounts = res[0].accounts;
+      STATE.operatorKey = res[1].key;
+      renderAdmin();
+    })
+    .catch(function(err){
+      if (err && err.sessionExpired) return;
+      var r = E('adminRoot');
+      if (r) r.innerHTML = '<p class="flag">'+esc(err.message)+'</p>';
+    });
+}
+
+function renderAdmin(){
+  var root = E('adminRoot');
+  if (!root) return;
+  var accounts = STATE.accounts || [];
+
+  var rows = accounts.map(function(a){
+    return '<tr>' +
+      '<td class="l">'+esc(a.username)+'</td>' +
+      '<td class="l">'+esc(a.name)+'</td>' +
+      '<td><select data-acct-role="'+esc(a.accountId)+'">' +
+        ['Admin','Operator'].map(function(r){
+          return '<option'+(r===a.role?' selected':'')+'>'+r+'</option>';
+        }).join('') +
+      '</select></td>' +
+      '<td>'+(a.active ? '<span class="ok">Active</span>' : '<span class="muted">Disabled</span>')+'</td>' +
+      '<td>' +
+        '<button class="btn sm" data-acct-reset="'+esc(a.accountId)+'">Reset password</button> ' +
+        '<button class="btn sm" data-acct-active="'+esc(a.accountId)+'" data-to="'+(a.active?'0':'1')+'">'+(a.active?'Disable':'Enable')+'</button> ' +
+        '<button class="btn sm danger" data-acct-del="'+esc(a.accountId)+'">Delete</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  root.innerHTML = '' +
+  '<section class="card">' +
+    '<h2>Operator QR key</h2>' +
+    '<p class="muted" style="margin-top:0">Every reel tag you print carries this key, and scanning a tag is what signs an operator in. ' +
+      'Rotating it immediately blocks every tag already out on the floor &mdash; you would have to reprint them &mdash; so only rotate if a tag has gone somewhere it shouldn&rsquo;t.</p>' +
+    '<div class="keybox">'+esc(STATE.operatorKey || '(not set — run setup() in the Apps Script editor)')+'</div>' +
+    '<div class="row" style="margin-top:10px">' +
+      '<button class="btn danger" id="rotateKeyBtn">Rotate key</button>' +
+      '<span class="muted" style="font-size:10px">Reprint every active reel&rsquo;s tag afterward.</span>' +
+    '</div>' +
+  '</section>' +
+
+  '<section class="card">' +
+    '<h2>Logins</h2>' +
+    (accounts.length ? '<table><thead><tr><th class="l">Username</th><th class="l">Name</th><th>Role</th><th>Status</th><th>&nbsp;</th></tr></thead><tbody>'+rows+'</tbody></table>'
+      : '<p class="muted">No logins yet.</p>') +
+    '<h3 style="margin-top:14px">Add a login</h3>' +
+    '<p class="muted" style="margin-top:0;font-size:10.5px">An <b>Admin</b> login sees everything, same as yours. An <b>Operator</b> login is a fallback for someone whose tag won&rsquo;t scan &mdash; it can still only open one reel at a time.</p>' +
+    '<div class="grid g4">' +
+      '<div class="fld"><label>Username</label><input id="na_user" autocapitalize="none"></div>' +
+      '<div class="fld"><label>Name</label><input id="na_name"></div>' +
+      '<div class="fld"><label>Role</label><select id="na_role"><option>Admin</option><option>Operator</option></select></div>' +
+      '<div class="fld"><label>Password (min 6)</label><input id="na_pass" type="text"></div>' +
+    '</div>' +
+    '<div class="row" style="margin-top:10px"><button class="btn pri" id="addAcctBtn">Create login</button></div>' +
+  '</section>' +
+
+  '<section class="card">' +
+    '<h2>Your password</h2>' +
+    '<div class="grid g2">' +
+      '<div class="fld"><label>Current password</label><input id="pw_old" type="password" autocomplete="current-password"></div>' +
+      '<div class="fld"><label>New password (min 6)</label><input id="pw_new" type="password" autocomplete="new-password"></div>' +
+    '</div>' +
+    '<div class="row" style="margin-top:10px"><button class="btn" id="changePwBtn">Change password</button></div>' +
+  '</section>';
+
+  bindAdminControls(root);
+}
+
+function bindAdminControls(root){
+  E('rotateKeyBtn').addEventListener('click', function(){
+    if (!confirm('Rotate the operator key?\n\nEvery QR tag already printed stops working immediately and operators scanning them will be told to get a new tag. You will need to reprint the tag for every reel still in production.')) return;
+    apiPost('rotateOperatorKey', {}).then(function(res){
+      STATE.operatorKey = res.key;
+      toast('Key rotated — reprint reel tags');
+      renderAdmin();
+    }).catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
+  });
+
+  E('addAcctBtn').addEventListener('click', function(){
+    var btn = E('addAcctBtn');
+    btn.disabled = true;
+    apiPost('createAccount', {
+      username: E('na_user').value.trim(), name: E('na_name').value.trim(),
+      role: E('na_role').value, password: E('na_pass').value
+    }).then(function(res){
+      STATE.accounts = res.accounts;
+      toast('Login created');
+      renderAdmin();
+    }).catch(function(err){
+      btn.disabled = false;
+      if (!err.sessionExpired) toast(err.message, true);
+    });
+  });
+
+  E('changePwBtn').addEventListener('click', function(){
+    apiPost('changePassword', {oldPassword: E('pw_old').value, newPassword: E('pw_new').value})
+      .then(function(){ toast('Password changed'); E('pw_old').value=''; E('pw_new').value=''; })
+      .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
+  });
+
+  qsa('[data-acct-reset]', root).forEach(function(b){
+    b.addEventListener('click', function(){
+      var pw = prompt('New password for this login (min 6 characters):');
+      if (!pw) return;
+      apiPost('resetPassword', {accountId: b.dataset.acctReset, newPassword: pw})
+        .then(function(){ toast('Password reset'); })
+        .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
+    });
+  });
+
+  // Changing a role takes effect on that account's next request — the server re-reads
+  // the role on every call, so an operator promoted mid-shift doesn't have to sign out.
+  qsa('[data-acct-role]', root).forEach(function(sel){
+    sel.addEventListener('change', function(){
+      apiPost('updateAccount', {accountId: sel.dataset.acctRole, role: sel.value})
+        .then(function(res){ STATE.accounts = res.accounts; toast('Role updated'); renderAdmin(); })
+        .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); renderAdmin(); });
+    });
+  });
+
+  qsa('[data-acct-active]', root).forEach(function(b){
+    b.addEventListener('click', function(){
+      apiPost('setAccountActive', {accountId: b.dataset.acctActive, active: b.dataset.to === '1'})
+        .then(function(res){ STATE.accounts = res.accounts; renderAdmin(); })
+        .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
+    });
+  });
+
+  qsa('[data-acct-del]', root).forEach(function(b){
+    b.addEventListener('click', function(){
+      if (!confirm('Delete this login for good? Anything they already logged stays in the sheet.')) return;
+      apiPost('deleteAccount', {accountId: b.dataset.acctDel})
+        .then(function(res){ STATE.accounts = res.accounts; renderAdmin(); })
+        .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
+    });
+  });
+}
+
 /* ============================= HOME ============================= */
 function viewHome(){
+  return isAdmin() ? viewHomeAdmin() : viewHomeOperator();
+}
+
+function viewHomeAdmin(){
   var params = new URLSearchParams(location.search);
   var urlPipe = params.get('pipe') || '';
   return '' +
@@ -487,17 +864,50 @@ function viewHome(){
   '</section>';
 }
 
+// An operator sees only this: the reel in their hands. No work order lookup, no
+// "create" anything, no API URL (that's a controller setting) — just scan or type the
+// reel code. Normally they never even land here: a scanned tag signs them in and drops
+// them straight into the reel. This is the fallback after finishing one, or for an
+// Operator login typed by hand.
+function viewHomeOperator(){
+  var params = new URLSearchParams(location.search);
+  var urlPipe = params.get('pipe') || '';
+  return '' +
+  '<section class="card">' +
+    '<h2>Open a reel</h2>' +
+    '<p class="muted" style="margin-top:0">Scan the QR tag on the reel, or type its code.</p>' +
+    '<div class="row">' +
+      '<div class="fld" style="flex:1;min-width:180px"><label>Reel code</label>' +
+        '<input id="codeInput" placeholder="e.g. BL20260128-R1" value="'+esc(urlPipe)+'"></div>' +
+      '<button class="btn" id="scanBtn" style="align-self:flex-end">Scan QR</button>' +
+      '<button class="btn pri" id="goBtn" style="align-self:flex-end">Go</button>' +
+    '</div>' +
+    '<div id="homeResult" style="margin-top:10px"></div>' +
+  '</section>' +
+  '<section class="card no-print">' +
+    '<h2>Your name</h2>' +
+    '<p class="muted" style="margin-top:0;font-size:10.5px">Goes on every reading, note and photo you log.</p>' +
+    '<div class="row">' +
+      '<div class="fld" style="flex:1"><input id="opNameInput" value="'+esc(getOperatorName())+'" placeholder="First L."></div>' +
+      '<button class="btn sm" id="saveNameBtn" style="align-self:flex-end">Save</button>' +
+    '</div>' +
+  '</section>';
+}
+
 function bindHome(){
   E('scanBtn').addEventListener('click', function(){ startScan(function(code){ E('codeInput').value = code; lookupCode(code); }); });
   E('goBtn').addEventListener('click', function(){ lookupCode(E('codeInput').value.trim()); });
   E('codeInput').addEventListener('keydown', function(ev){ if (ev.key==='Enter') lookupCode(E('codeInput').value.trim()); });
-  E('newWoBtn').addEventListener('click', function(){ go('controllerNew', {workOrderCode:''}); });
-  E('saveApiBtn').addEventListener('click', function(){
-    var v = E('apiUrlInput').value.trim();
-    if (v){ localStorage.setItem('srtp_api_url', v); API_URL = v; } else { localStorage.removeItem('srtp_api_url'); API_URL = DEFAULT_API_URL; }
-    toast('API URL saved'); checkConnection();
-  });
   E('saveNameBtn').addEventListener('click', function(){ setOperatorName(E('opNameInput').value.trim()); toast('Name saved'); });
+
+  if (isAdmin()){
+    E('newWoBtn').addEventListener('click', function(){ go('controllerNew', {workOrderCode:''}); });
+    E('saveApiBtn').addEventListener('click', function(){
+      var v = E('apiUrlInput').value.trim();
+      if (v){ lsSet('srtp_api_url', v); API_URL = v; } else { lsDel('srtp_api_url'); API_URL = DEFAULT_API_URL; }
+      toast('API URL saved'); checkConnection();
+    });
+  }
 
   var urlPipe = new URLSearchParams(location.search).get('pipe');
   if (urlPipe) lookupCode(urlPipe);
@@ -508,6 +918,21 @@ function lookupCode(code){
   if (!code){ toast('Enter a code', true); return; }
   var box = E('homeResult');
   box.innerHTML = '<p class="muted">Looking up '+esc(code)+'&hellip;</p>';
+
+  // An operator's lookup is reel-only. It never falls through to the work-order
+  // branch below, so a work order code typed (or a tag misread) just comes back
+  // "not found" rather than exposing the work order and its reel list.
+  if (!isAdmin()){
+    apiGet('getPipe', {pipeCode: code}).then(function(data){
+      applyPipeData(data);
+      STATE.pipeCode = code; STATE.workOrderCode = data.pipe.WorkOrderCode;
+      go('operator', {pipeCode: code, section: firstOpenSection(data.pipe)});
+    }).catch(function(err){
+      if (err && err.sessionExpired) return;
+      box.innerHTML = '<p class="flag">No reel found for "'+esc(code)+'". Check the code, or ask the controller for a tag.</p>';
+    });
+    return;
+  }
 
   apiGet('getPipe', {pipeCode: code}).then(function(data){
     applyPipeData(data);
@@ -525,9 +950,11 @@ function lookupCode(code){
       STATE.workOrderCode = code;
       STATE.workOrder = info.workOrder;
       var wo = info.workOrder;
-      var pipesHtml = info.pipes.length ? '<table style="margin-top:8px"><thead><tr><th class="l">Reel</th><th>Status</th></tr></thead><tbody>' +
+      var pipesHtml = info.pipes.length ? '<table style="margin-top:8px"><thead><tr><th class="l">Reel</th><th>Status</th><th>Tag</th></tr></thead><tbody>' +
         info.pipes.map(function(p){
-          return '<tr class="homePipeRow" data-pipe="'+esc(p.PipeCode)+'" style="cursor:pointer"><td class="l">'+esc(p.PipeCode)+'</td><td>'+pillHtml(p.OverallStatus)+'</td></tr>';
+          return '<tr><td class="l homePipeRow" data-pipe="'+esc(p.PipeCode)+'" style="cursor:pointer">'+esc(p.PipeCode)+'</td>' +
+            '<td class="homePipeRow" data-pipe="'+esc(p.PipeCode)+'" style="cursor:pointer">'+pillHtml(p.OverallStatus)+'</td>' +
+            '<td><button class="btn sm" data-reprint="'+esc(p.PipeCode)+'">Reprint</button></td></tr>';
         }).join('') + '</tbody></table>' : '<p class="muted" style="margin-top:8px">No reels yet on this work order.</p>';
       box.innerHTML =
         '<div class="row"><span class="ok">Work order found:</span> <b>'+esc(wo.Code)+'</b> ' +
@@ -541,8 +968,11 @@ function lookupCode(code){
       E('viewWodBtn').addEventListener('click', function(){ go('woDashboard', {workOrderCode: wo.Code}); });
       E('editWoBtn').addEventListener('click', function(){ go('controller', {workOrderCode: wo.Code}); });
       E('addPipeBtn').addEventListener('click', function(){ go('addPipe', {workOrderCode: wo.Code}); });
-      qsa('.homePipeRow', box).forEach(function(tr){
-        tr.addEventListener('click', function(){ lookupCode(tr.dataset.pipe); });
+      qsa('.homePipeRow', box).forEach(function(td){
+        td.addEventListener('click', function(){ lookupCode(td.dataset.pipe); });
+      });
+      qsa('[data-reprint]', box).forEach(function(b){
+        b.addEventListener('click', function(){ openTagFor(b.dataset.reprint); });
       });
     }).catch(function(){
       box.innerHTML = '<p class="flag">No reel or work order found for "'+esc(code)+'".</p>' +
@@ -760,18 +1190,38 @@ function bindAddPipe(){
 }
 
 /* ============================= PRINTABLE TAG ============================= */
+// The tag URL is the operator's credential: scanning it both identifies the reel and
+// signs the scanner in (see tryQrLogin). So the key has to be in the QR at print time,
+// and a tag printed before a key rotation stops working — hence the warning below and
+// the reprint button on the work-order lookup.
+function ensureOperatorKey(){
+  if (STATE.operatorKey) return Promise.resolve(STATE.operatorKey);
+  return apiGet('getOperatorKey').then(function(res){ STATE.operatorKey = res.key; return res.key; });
+}
+
+function tagUrlFor(pipeCode, workOrderCode){
+  return location.origin + location.pathname +
+    '?pipe=' + encodeURIComponent(pipeCode) +
+    '&wo=' + encodeURIComponent(workOrderCode) +
+    '&k=' + encodeURIComponent(STATE.operatorKey || '');
+}
+
 function viewTagPrinted(){
   var pipe = STATE.pipe, wo = STATE.workOrder;
   return '' +
   '<section class="card">' +
-    '<h2>Reel created</h2>' +
-    '<div class="qrbox" id="tagQr"></div>' +
+    '<h2>Reel tag</h2>' +
+    '<div class="qrbox" id="tagQr"><p class="muted">Building tag&hellip;</p></div>' +
     '<div class="tagmeta">' +
       '<div style="font-size:18px;font-weight:700">'+esc(pipe.PipeCode)+'</div>' +
       '<div class="muted">Work order '+esc(pipe.WorkOrderCode)+'</div>' +
       '<div class="muted">'+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+' &middot; '+esc(wo.PipeSize||'')+'</div>' +
     '</div>' +
-    '<div class="row" style="justify-content:center;margin-top:10px">' +
+    '<p class="muted no-print" style="text-align:center;font-size:10.5px;margin:10px 0 0">' +
+      'Scanning this tag signs the operator in and opens this reel &mdash; so treat the printed tag ' +
+      'like a key and keep it on the reel. If you ever rotate the operator key in Admin, every tag ' +
+      'printed before that stops working and has to be reprinted.</p>' +
+    '<div class="row no-print" style="justify-content:center;margin-top:10px">' +
       '<button class="btn" id="printBtn">Print tag</button>' +
       '<button class="btn pri" id="startOpBtn">Start Baseline entry</button>' +
       '<button class="btn" id="addAnotherBtn">Add another reel</button>' +
@@ -782,21 +1232,38 @@ function viewTagPrinted(){
 
 function bindTagPrinted(){
   var pipe = STATE.pipe, wo = STATE.workOrder;
-  var tagUrl = location.origin + location.pathname + '?pipe=' + encodeURIComponent(pipe.PipeCode) + '&wo=' + encodeURIComponent(pipe.WorkOrderCode);
-  var qrObj = qrcode(0, 'M'); qrObj.addData(tagUrl); qrObj.make();
-  E('tagQr').innerHTML = qrObj.createSvgTag({cellSize:5, margin:4});
-  var printTag = E('printTag');
-  printTag.innerHTML = '<div style="font-family:Segoe UI,Arial,sans-serif;padding:24px;text-align:center;max-width:3in">' +
-    qrObj.createSvgTag({cellSize:6, margin:4}) +
-    '<div style="font-size:20px;font-weight:700;margin-top:8px">'+esc(pipe.PipeCode)+'</div>' +
-    '<div style="font-size:11px;color:#555">Work order '+esc(pipe.WorkOrderCode)+'</div>' +
-    '<div style="font-size:12px;color:#555">'+esc(wo.Customer||'')+'</div>' +
-    '<div style="font-size:12px;color:#555">'+esc(wo.ProductCode||'')+' &middot; '+esc(wo.PipeSize||'')+'</div>' +
-  '</div>';
+
+  // The key comes from the server rather than being baked in, so a rotation is picked up
+  // by the next tag printed without anyone having to redeploy the page.
+  ensureOperatorKey().then(function(){
+    var qrObj = qrcode(0, 'M'); qrObj.addData(tagUrlFor(pipe.PipeCode, pipe.WorkOrderCode)); qrObj.make();
+    E('tagQr').innerHTML = qrObj.createSvgTag({cellSize:5, margin:4});
+    E('printTag').innerHTML = '<div style="font-family:Segoe UI,Arial,sans-serif;padding:24px;text-align:center;max-width:3in">' +
+      qrObj.createSvgTag({cellSize:6, margin:4}) +
+      '<div style="font-size:20px;font-weight:700;margin-top:8px">'+esc(pipe.PipeCode)+'</div>' +
+      '<div style="font-size:11px;color:#555">Work order '+esc(pipe.WorkOrderCode)+'</div>' +
+      '<div style="font-size:12px;color:#555">'+esc(wo.Customer||'')+'</div>' +
+      '<div style="font-size:12px;color:#555">'+esc(wo.ProductCode||'')+' &middot; '+esc(wo.PipeSize||'')+'</div>' +
+    '</div>';
+  }).catch(function(err){
+    if (err && err.sessionExpired) return;
+    E('tagQr').innerHTML = '<p class="flag">Could not build the tag: '+esc(err.message)+'</p>';
+  });
+
   E('printBtn').addEventListener('click', function(){ window.print(); });
   E('startOpBtn').addEventListener('click', function(){ go('operator', {pipeCode: pipe.PipeCode, section: 'Baseline'}); });
   E('addAnotherBtn').addEventListener('click', function(){ go('addPipe', {workOrderCode: pipe.WorkOrderCode}); });
   E('homeAfterBtn').addEventListener('click', function(){ go('home'); });
+}
+
+// Loads a reel and drops the controller on its tag page, for reprinting a lost or
+// damaged tag — or every tag, after rotating the operator key.
+function openTagFor(pipeCode){
+  apiGet('getPipe', {pipeCode: pipeCode}).then(function(data){
+    applyPipeData(data);
+    STATE.pipeCode = pipeCode;
+    go('tagPrinted', {pipeCode: pipeCode});
+  }).catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
 }
 
 /* ============================= OPERATOR ============================= */
@@ -809,8 +1276,10 @@ function viewOperator(){
     '<div><b>'+esc(pipe.PipeCode)+'</b> <span class="muted">work order '+esc(pipe.WorkOrderCode)+' &middot; '+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+'</span></div>' +
     '<span class="spacer"></span>' +
     (openProblems ? '<span class="pill" style="background:var(--crit)">'+openProblems+' open issue'+(openProblems===1?'':'s')+'</span>' : '') +
-    '<button class="btn sm" id="emailNowBtn">Email report now</button>' +
-    '<button class="btn sm" id="backHomeBtn">Home</button>' +
+    // Emailing the report sends it out to the work order's EmailTo list — a controller
+    // action, not something the floor triggers, so operators don't get the button.
+    (isAdmin() ? '<button class="btn sm" id="emailNowBtn">Email report now</button>' : '') +
+    '<button class="btn sm" id="backHomeBtn">'+(isAdmin() ? 'Home' : 'Done — another reel')+'</button>' +
   '</div>' +
   '<div class="tabs">' +
     '<button data-sec="Setup" class="'+(sec==='Setup'?'active':'')+'">Setup Reference</button>' +
@@ -1357,12 +1826,13 @@ function bindOperator(){
 
   var sec = STATE.section, prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
 
-  E('emailNowBtn').addEventListener('click', function(){
-    E('emailNowBtn').disabled = true;
+  var emailBtn = E('emailNowBtn'); // admin only — see viewOperator's header
+  if (emailBtn) emailBtn.addEventListener('click', function(){
+    emailBtn.disabled = true;
     apiPost('sendReport', {pipeCode: STATE.pipeCode, trigger: 'manual'})
       .then(function(res){ toast('Report emailed to ' + res.sentTo); })
-      .catch(function(err){ toast(err.message, true); })
-      .then(function(){ E('emailNowBtn').disabled = false; });
+      .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); })
+      .then(function(){ emailBtn.disabled = false; });
   });
 
   if (sec === 'Setup') return;
@@ -2209,7 +2679,9 @@ E('scanCancel').addEventListener('click', stopScan);
 
 /* ============================= BIND DISPATCH ============================= */
 function bindView(){
-  if (STATE.view === 'home') bindHome();
+  if (STATE.view === 'login') bindLogin();
+  else if (STATE.view === 'admin') bindAdmin();
+  else if (STATE.view === 'home') bindHome();
   else if (STATE.view === 'controller') bindController(false);
   else if (STATE.view === 'controllerNew') bindController(true);
   else if (STATE.view === 'addPipe') bindAddPipe();
@@ -2228,10 +2700,44 @@ document.addEventListener('click', function(ev){
 });
 
 /* ============================= INIT ============================= */
-if (new URLSearchParams(location.search).get('tv')) STATE.view = 'tv';
-checkConnection();
-render();
-setInterval(checkConnection, 30000);
+(function init(){
+  var params = new URLSearchParams(location.search);
+  var qrKey = params.get('k') || '';
+  var urlPipe = params.get('pipe') || '';
+
+  setInterval(checkConnection, 30000);
+
+  // A scanned tag: trade its key for an operator session, then get the key out of the
+  // address bar. Done before anything renders so the login screen never flashes.
+  if (qrKey){
+    scrubKeyFromUrl();
+    checkConnection();
+    tryQrLogin(qrKey, urlPipe);
+    return;
+  }
+
+  if (!isSignedIn()){
+    STATE.view = 'login';
+    checkConnection();
+    render();
+    return;
+  }
+
+  // The TV board is a controller display; an operator session landing on ?tv= gets
+  // bounced to their reel lookup by go()'s ADMIN_VIEWS guard.
+  if (params.get('tv')) STATE.view = 'tv';
+  checkConnection();
+
+  // A signed-in operator refreshing a reel URL (the tag's ?pipe= survives scrubKeyFromUrl)
+  // goes straight back into that reel instead of through the lookup card.
+  if (!isAdmin() && urlPipe && !params.get('tv')){
+    render();
+    openReelForOperator(urlPipe);
+    return;
+  }
+
+  render();
+})();
 </script>
 </body>
 </html>

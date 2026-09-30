@@ -1,10 +1,37 @@
 # SRTP Production Tracker — setup
 
-**Already deployed once and just need to push an update?** Skip to [Updating later](#updating-later). This round needs a `Code.gs` redeploy (new Baseline recipe-card fields) plus re-hosting `index.html` — append-only, no fresh Sheet needed.
+**Already deployed once and just need to push an update?** Skip to [Updating later](#updating-later). This round needs a `Code.gs` redeploy (logins + the new Baseline recipe-card fields) plus re-hosting `index.html`, and you must **re-run `setup()`** so the three new tabs and your first admin login get created. Append-only, no fresh Sheet needed. **Every QR tag has to be reprinted** — see [Logins and access](#logins-and-access).
 
 Two pieces:
-- **Backend**: a Google Sheet + Apps Script (`AppsScript/Code.gs`) — this is the database, the JSON API, photo storage (Google Drive), and the email sender.
-- **Front end**: `index.html` — one file, hosted the same way as the splice logger (GitHub Pages). Works on any phone/tablet/PC, no login required for operators.
+- **Backend**: a Google Sheet + Apps Script (`AppsScript/Code.gs`) — this is the database, the JSON API, photo storage (Google Drive), the email sender, and the login/permission check.
+- **Front end**: `index.html` — one file, hosted the same way as the splice logger (GitHub Pages). Works on any phone/tablet/PC. The whole site is behind a login now.
+
+## Logins and access
+
+There are two roles, and the role decides everything:
+
+| | **Admin** (you / the controller) | **Operator** (the floor) |
+|---|---|---|
+| Work orders | create, edit targets | — |
+| Reels + QR tags | create, print, reprint | — |
+| Dashboard / TV view / Timers page | yes | **no** |
+| Open a reel and log against it | yes | yes — **one reel at a time** |
+| Readings, thickness, notes, photos, material, problems, Stop/Resume, mark complete | yes | yes |
+| Email the report out | yes | no |
+| Manage logins, rotate the operator key | yes | no |
+
+**An operator never types a password.** They scan the QR tag on the reel; that signs them in *and* opens that reel. Behind the scenes the tag's URL carries a shop-wide **operator key**, which the site trades for a session lasting about one shift (12 hours). The key is wiped out of the address bar immediately so it can't be copied out of the browser bar or a screenshot.
+
+What an operator gets is genuinely just that one reel: no dashboard, no work-order lookup, no way to see another job, no way to edit a target. Typing a work order code into their screen returns "no reel found" rather than the work order. This is enforced on the **server**, not just by hiding buttons — a saved bookmark or a hand-edited URL gets refused the same way.
+
+A few consequences worth knowing up front:
+
+- **The printed tag is the credential.** Treat it like a key: it stays on the reel. Anyone who photographs a tag can sign in as an operator until you rotate the key.
+- **Rotating the key invalidates every tag already printed.** Admin > **Rotate key** does this instantly (and kicks out anyone currently signed in by scan). Only do it if a tag has gone somewhere it shouldn't — and then reprint the tag for every reel still in production. There's a **Reprint** button next to each reel when you look up a work order.
+- **Tags printed before this update won't sign anyone in** — they have no key in them. They'll still open the site, but the operator will land on the login screen. Reprint them once after deploying.
+- **Operator logins with a password exist too**, as a fallback for a tag that won't scan (a torn label, a dead camera). Create one from the Admin panel; it can still only open one reel at a time.
+
+Note on the deployment setting: "Who has access: **Anyone**" only means Google won't demand a Google account. The site's own login is what actually gates the data.
 
 ## The model: work orders and pipes
 
@@ -15,6 +42,7 @@ Two pieces:
 
 ## What's new this round
 
+- **The whole site is behind a login now, and the dashboard is yours alone.** See [Logins and access](#logins-and-access) above for the full picture. The short version: you get an admin login that sees everything exactly as before; operators scan the reel's QR tag and land straight in that one reel with no password and no route to the dashboard, the TV view, the Timers page, or anybody else's work order. Setting this up takes one extra step — re-run `setup()`, which prints your first admin username and password once — and one bit of housekeeping: **reprint every reel tag**, because tags printed before this update don't carry the key that signs an operator in.
 - **Baseline setup now matches the real recipe card — three extruders, not one.** Baseline's recipe card has separate Backer, Co/Bonding, and Co/Inner Liner extruders, each with its own material and temperature zones (Coverline's card only has the one extruder, so that one's unchanged). Work order setup now has Material + RPM + temp zones for all three, and Setup Reference/the Baseline tab shows all three when filled in — headed exactly like the recipe card ("Backer Extruder Size: 3.5"", "Co/Bonding Extruder Size: 1.25"", "Co/Inner Liner Extruder Size: 2""). The sizes are fixed on the machine, so they're not something you enter — they're just always shown that way in the heading. Existing work orders just won't have the two new extruders' values until you edit them and fill those in.
 - **Fixed "Longs" — it was never carriers × ends up.** The number of carriers on the braider is a fixed machine constant, not something that varies per job, so it never belonged in the recipe data. Braidline setup now just asks for **Longs — quantity needed** (one number), and the carrier-count field is gone from the form and from the Setup Reference/Braidline tab display.
 
@@ -44,7 +72,10 @@ Two pieces:
 2. Select all the existing code (Ctrl+A), delete it, and paste in the entire contents of `AppsScript/Code.gs` from this folder.
 3. Save (Ctrl+S / the save icon).
 4. In the function dropdown at the top (next to the bug icon), select **setup**, then click **Run** (▶). Authorize when prompted (Sheets, Drive for photos, Gmail for reports).
-5. Check the Sheet — you should now see 10 tabs: `WorkOrders`, `Pipes`, `Readings`, `ThicknessChecks`, `Notes`, `Photos`, `EmailLog`, `MaterialUsage`, `ProblemReports`, `DowntimeEvents`.
+5. **Write down the admin username and password it shows you.** `setup()` pops up (and logs) the first admin login — username `controller` and a generated password. It is stored only as a hash, so this is the one and only time you'll see it. Change it after you sign in, from **Admin > Your password**. If you miss it, see [If you lose the admin password](#if-you-lose-the-admin-password).
+6. Check the Sheet — you should now see 13 tabs: `WorkOrders`, `Pipes`, `Readings`, `ThicknessChecks`, `Notes`, `Photos`, `EmailLog`, `MaterialUsage`, `ProblemReports`, `DowntimeEvents`, `Accounts`, `Sessions`, `Settings`.
+
+Re-running `setup()` later is safe: it never resets a password and never creates a second admin as long as one active admin exists.
 
 ## 2. Deploy the API
 
@@ -68,7 +99,7 @@ Same as always: paste `index.html`'s contents into your GitHub repo's `index.htm
 
 ## 5. Try it end-to-end
 
-1. Open the site — header should say **Connected**.
+1. Open the site — you get the **Sign in** screen. Sign in with the admin username/password `setup()` gave you. The header should then say **Connected** and you should see Home / Dashboard / Timers / Admin in the nav.
 2. **+ New work order** → fill in customer/product/targets, including **Project length** and each section's **Target length per pipe**. Save.
 3. You'll land on **Add a pipe** — give it a pipe code (e.g. `BL20260128-R1`), create it.
 4. You get the QR tag for that pipe — print it, or **Start Baseline entry**.
@@ -76,6 +107,25 @@ Same as always: paste `index.html`'s contents into your GitHub repo's `index.htm
 6. From Home, look up the work order code again → **+ Add new pipe** → create a second pipe (e.g. `-R2`) on the *same* work order. Notice it starts with a clean slate (Not started on every section) while R1 keeps its own progress.
 7. Open **Dashboard** — the work order card shows both pipes side by side with their own status per section, plus the project-length progress bar. Click either pipe row for the full-size detail page with its chart.
 8. Open the **TV view** (or `?tv=1`) — same grouped-by-work-order view, big-screen sized. Click a work order card to see its pipes, click a pipe to see its chart, use "← Back" to step out.
+9. **Check the operator side.** Print (or just screenshot) a reel tag, then open it on a phone — or in a private/incognito window, so it doesn't reuse your admin session. Scanning the tag should sign you straight into that reel with no password. Confirm that the nav shows only **Open a reel** and **Sign out** — no Dashboard, no Timers, no Admin — and that typing the *work order* code into "Open a reel" comes back "no reel found". That's the lockdown working.
+
+## If you lose the admin password
+
+Nothing is recoverable from the Sheet — the `Accounts` tab holds only a hash. To get back in, open the Apps Script editor and either:
+
+- delete your admin's row from the `Accounts` tab and run `setup()` again (it creates a fresh `controller` login and prints a new password), or
+- run this once from the editor to set a known password on an existing account, then change it from the site:
+
+  ```js
+  function resetMyPassword() {
+    var salt = makeSalt_();
+    updateRowByKey_(SHEETS.ACCOUNTS, 'Username', 'controller', {
+      PasswordHash: hashPassword_('pick-a-temp-password', salt), PasswordSalt: salt, Active: true
+    });
+  }
+  ```
+
+The `Sessions` tab is just live logins — deleting rows from it signs those people out and breaks nothing. Expired rows get cleaned up on their own whenever someone signs in.
 
 ## How the pieces fit together
 
@@ -104,3 +154,5 @@ If `index.html` also changed, re-host it the normal way.
 - **Tolerance flags** only show once a target + tolerance is set on the work order.
 - This system tracks **dimensional QC data** (OD, ID, wall, pitch, longs, length) — it does not digitize the full extrusion recipe (temperature zones, line speed, etc. are reference-only fields), which stays a controlled paper document with Engineering sign-off.
 - Apps Script Web Apps have Google's standard quotas (URL fetch/email sends per day) — not a concern at this volume, but worth knowing if usage grows a lot.
+- **The QR key is a shared shop secret, not a per-person identity.** Every tag carries the same key, so scanning tells you *someone on the floor* opened the reel, not *who* — attribution still comes from the operator's typed name on each entry, exactly as before. That's the trade for not making the floor type passwords. If you ever need per-person attribution to be enforced rather than self-reported, the next step is per-operator logins instead of the shared key.
+- **Passwords are hashed (salted SHA-256), and traffic is HTTPS**, but this is shop-floor access control, not something to hold data you'd be in trouble for leaking. It keeps the dashboard off the floor and keeps casual visitors out; it isn't hardened against someone determined who already has a tag.

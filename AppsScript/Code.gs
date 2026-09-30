@@ -13,8 +13,15 @@
  * "reel", per the production manager's preferred terminology. Don't rename the
  * internal identifiers; it'd force a data migration for zero user-visible benefit.
  *
+ * Access: every request needs a session token. There are two roles — Admin (the
+ * controller: work orders, reels, tags, dashboard, logins) and Operator (the floor:
+ * one reel at a time, nothing else). See the AUTHORIZATION block below; that's the
+ * whole model. "Who has access: Anyone" on the deployment only means Google won't
+ * ask for a Google account — this script's own login is what actually gates the data.
+ *
  * Bind this script to a Google Sheet (Extensions > Apps Script from within the Sheet).
- * Run setup() once from the editor to create the tabs.
+ * Run setup() once from the editor to create the tabs — it also prints the first admin
+ * username/password, which is shown only that once.
  * Deploy > New deployment > Web app > Execute as: Me > Who has access: Anyone.
  * Paste the resulting /exec URL into API_URL near the top of index.html.
  */
@@ -29,7 +36,10 @@ var SHEETS = {
   EMAILLOG: 'EmailLog',
   MATERIAL: 'MaterialUsage',
   PROBLEMS: 'ProblemReports',
-  DOWNTIME: 'DowntimeEvents'
+  DOWNTIME: 'DowntimeEvents',
+  ACCOUNTS: 'Accounts',
+  SESSIONS: 'Sessions',
+  SETTINGS: 'Settings'
 };
 
 // Downtime reason categories offered in the UI (kept here so front end and email report agree).
@@ -84,11 +94,97 @@ var HEADERS = {
   MaterialUsage: ['RowId', 'PipeCode', 'Section', 'Timestamp', 'Operator', 'Material', 'LotNumber', 'StartWeight', 'EndWeight', 'UsedWeight'],
   ProblemReports: ['RowId', 'PipeCode', 'Section', 'Timestamp', 'Operator', 'FootageMarker', 'Description',
     'Status', 'ResolvedBy', 'ResolvedAt', 'ResolutionNotes'],
-  DowntimeEvents: ['RowId', 'PipeCode', 'Section', 'StartTime', 'EndTime', 'ReasonCode', 'Notes', 'Operator']
+  DowntimeEvents: ['RowId', 'PipeCode', 'Section', 'StartTime', 'EndTime', 'ReasonCode', 'Notes', 'Operator'],
+
+  // Logins. Passwords are never stored — only a salted SHA-256 hash (hashPassword_).
+  // Role is the whole authorization model: see ACTION_ROLES below.
+  Accounts: ['AccountId', 'Username', 'Name', 'Role', 'PasswordHash', 'PasswordSalt', 'Active', 'CreatedAt', 'CreatedBy'],
+  // Kind is 'password' (typed a username/password) or 'qr' (scanned a reel tag carrying
+  // the shop operator key) — they get different lifetimes, see SESSION_DAYS/QR_SESSION_HOURS.
+  Sessions: ['Token', 'AccountId', 'Kind', 'CreatedAt', 'ExpiresAt'],
+  Settings: ['Key', 'Value']
 };
 
 var DRIVE_ROOT_FOLDER_NAME = 'SRTP Production Tracker Photos';
 var DEFAULT_EMAIL_TO = 'dwilliams@specialtyrtp.com';
+
+/* ============================== AUTHORIZATION ==============================
+ * Two roles, and the role alone decides everything:
+ *
+ *   Admin    — the controller. Creates/edits work orders, adds reels, prints tags,
+ *              sees the plant-wide Dashboard / TV view / Timers page, manages logins.
+ *   Operator — the floor. Can ONLY open one reel at a time and log against it:
+ *              readings, thickness checks, notes, photos, material usage, problem
+ *              reports, the Stop/Resume timer, and marking a section complete. The
+ *              work order's reference targets come along with the reel (getPipe
+ *              returns them) so the operator can still see what they're building to,
+ *              but there is no route to the dashboard, to another work order's data,
+ *              or to any edit of the targets themselves.
+ *
+ * Operators reach the app by scanning the QR tag the controller printed for the reel.
+ * That tag URL carries OPERATOR_KEY_SETTING (a shop-wide secret held in the Settings
+ * sheet), which qrLogin trades for a short operator session — so the printed tag IS
+ * the credential, and nobody on the floor types a password. Rotating the key from the
+ * admin panel invalidates every already-printed tag, so tags must be reprinted after
+ * a rotation; that's the deliberate cost of being able to revoke.
+ *
+ * Every action below is denied unless it's listed for the caller's role — a new action
+ * added to doGet/doPost without an entry here fails closed rather than being wide open.
+ * ========================================================================== */
+
+var ROLES = ['Admin', 'Operator'];
+
+var ACTION_ROLES = {
+  // Read
+  ping: ['Admin', 'Operator'],
+  getPipe: ['Admin', 'Operator'],
+  getWorkOrderInfo: ['Admin'],
+  dashboard: ['Admin'],
+  getOperatorKey: ['Admin'],
+  listAccounts: ['Admin'],
+
+  // Work order / reel structure — controller only
+  createWorkOrder: ['Admin'],
+  updateWorkOrder: ['Admin'],
+  createPipe: ['Admin'],
+  sendReport: ['Admin'],
+
+  // Logging against one reel — the operator's whole job
+  addReading: ['Admin', 'Operator'],
+  addThicknessCheck: ['Admin', 'Operator'],
+  addNote: ['Admin', 'Operator'],
+  addPhoto: ['Admin', 'Operator'],
+  addMaterialUsage: ['Admin', 'Operator'],
+  addProblemReport: ['Admin', 'Operator'],
+  resolveProblemReport: ['Admin', 'Operator'],
+  startDowntime: ['Admin', 'Operator'],
+  endDowntime: ['Admin', 'Operator'],
+  setSectionStatus: ['Admin', 'Operator'],
+
+  // Account management
+  changePassword: ['Admin', 'Operator'],
+  createAccount: ['Admin'],
+  updateAccount: ['Admin'],
+  resetPassword: ['Admin'],
+  setAccountActive: ['Admin'],
+  deleteAccount: ['Admin'],
+  rotateOperatorKey: ['Admin']
+};
+
+// Unauthenticated — these are how you GET a session, so they can't require one.
+var PUBLIC_ACTIONS = ['login', 'qrLogin'];
+
+var SESSION_DAYS = 30;       // a typed username/password login (the controller's laptop)
+var QR_SESSION_HOURS = 12;   // a scanned-tag login — about one shift on a shared tablet
+
+var OPERATOR_KEY_SETTING = 'OperatorQrKey';
+
+// The account every qrLogin session is issued against. It exists as a real Accounts row
+// so resolveSession_ needs no special case, but its PasswordHash is left blank and
+// handleLogin_ refuses a blank hash, so nobody can log into it by typing a password.
+var QR_ACCOUNT_ID = 'acct_qr_operator';
+
+var DEFAULT_ADMIN_USERNAME = 'controller';
 
 // body key (from index.html) -> WorkOrders column. Shared by create + update so the two never drift apart.
 var WO_FIELD_MAP = {
@@ -143,7 +239,10 @@ var TEXT_CODE_COLUMNS = {
   EmailLog: ['PipeCode'],
   MaterialUsage: ['PipeCode'],
   ProblemReports: ['PipeCode'],
-  DowntimeEvents: ['PipeCode']
+  DowntimeEvents: ['PipeCode'],
+  Accounts: ['AccountId', 'Username', 'PasswordHash', 'PasswordSalt'],
+  Sessions: ['Token', 'AccountId'],
+  Settings: ['Key', 'Value']
 };
 var TEXT_FORMAT_ROWS = 5000; // headroom of formatted (blank) rows below the header
 
@@ -171,6 +270,56 @@ function setup() {
   });
   var def = ss.getSheetByName('Sheet1');
   if (def && def.getLastRow() === 0 && def.getLastColumn() <= 1) ss.deleteSheet(def);
+
+  var msg = 'Sheets are ready.';
+
+  // The pseudo-account every scanned-tag session is issued against (see QR_ACCOUNT_ID).
+  if (!findAccountById_(QR_ACCOUNT_ID)) {
+    appendRow_(SHEETS.ACCOUNTS, {
+      AccountId: QR_ACCOUNT_ID, Username: '(qr-scan)', Name: 'Operator (QR scan)',
+      Role: 'Operator', PasswordHash: '', PasswordSalt: '', Active: true,
+      CreatedAt: nowIso_(), CreatedBy: 'setup'
+    });
+  }
+
+  // Shop-wide operator key that the printed QR tags carry. Generated once; rotate it
+  // from the site's Admin panel (which forces reprinting tags).
+  if (!getSetting_(OPERATOR_KEY_SETTING)) {
+    setSetting_(OPERATOR_KEY_SETTING, makeSalt_());
+  }
+
+  // First admin. Only created when there is no admin at all, so re-running setup()
+  // after you've changed the password never resets it.
+  var admins = listAccounts_().filter(function (a) { return a.Role === 'Admin' && a.Active !== false; });
+  if (!admins.length) {
+    var tempPassword = 'srtp-' + makeSalt_().slice(0, 8);
+    createAccountRow_({
+      username: DEFAULT_ADMIN_USERNAME, name: 'Controller', role: 'Admin',
+      password: tempPassword, createdBy: 'setup'
+    });
+    msg += '\n\nCreated the first admin login:\n  username: ' + DEFAULT_ADMIN_USERNAME +
+      '\n  password: ' + tempPassword +
+      '\n\nLog in with this, then change the password from the site (Admin > Change password).' +
+      '\nThis password is shown only now — it is not recoverable from the sheet.';
+  }
+
+  Logger.log(msg);
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* no UI when run headless — the log has it */ }
+}
+
+/* ---------- settings ---------- */
+
+function getSetting_(key) {
+  var rows = sheetToObjects_(SHEETS.SETTINGS);
+  var row = rows.filter(function (r) { return String(r.Key) === String(key); })[0];
+  return row ? String(row.Value || '') : '';
+}
+
+function setSetting_(key, value) {
+  var existing = findRowByKey_(SHEETS.SETTINGS, 'Key', key);
+  if (existing) updateRowByKey_(SHEETS.SETTINGS, 'Key', key, { Value: value });
+  else appendRow_(SHEETS.SETTINGS, { Key: key, Value: value });
+  return value;
 }
 
 function getSheet_(name) {
@@ -275,11 +424,257 @@ function numOrBlank_(v) {
   return isNaN(n) ? '' : n;
 }
 
+// ---------- accounts / passwords / sessions ----------
+
+function makeSalt_() {
+  return Utilities.getUuid().replace(/-/g, '');
+}
+
+function hashPassword_(password, salt) {
+  var digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(password) + ':' + salt);
+  return digest.map(function (b) {
+    var v = (b < 0 ? b + 256 : b);
+    return ('0' + v.toString(16)).slice(-2);
+  }).join('');
+}
+
+// Compares two hex strings in constant time so a wrong password can't be narrowed down
+// by timing how long the rejection took.
+function hashesEqual_(a, b) {
+  a = String(a || ''); b = String(b || '');
+  if (a.length !== b.length) return false;
+  var diff = 0;
+  for (var i = 0; i < a.length; i++) diff |= (a.charCodeAt(i) ^ b.charCodeAt(i));
+  return diff === 0;
+}
+
+function listAccounts_() { return sheetToObjects_(SHEETS.ACCOUNTS); }
+
+function findAccountByUsername_(username) {
+  var uname = String(username || '').trim().toLowerCase();
+  if (!uname) return null;
+  return listAccounts_().filter(function (a) { return String(a.Username).trim().toLowerCase() === uname; })[0] || null;
+}
+
+function findAccountById_(accountId) {
+  return listAccounts_().filter(function (a) { return String(a.AccountId) === String(accountId); })[0] || null;
+}
+
+function createAccountRow_(opts) {
+  var username = String(opts.username || '').trim();
+  if (!username) throw new Error('Username is required');
+  if (findAccountByUsername_(username)) throw new Error('That username is already taken');
+  if (!opts.password || String(opts.password).length < 6) throw new Error('Password must be at least 6 characters');
+  if (ROLES.indexOf(opts.role) < 0) throw new Error('Unknown role: ' + opts.role);
+
+  var salt = makeSalt_();
+  var accountId = 'acct_' + newId_();
+  appendRow_(SHEETS.ACCOUNTS, {
+    AccountId: accountId, Username: username, Name: opts.name || username, Role: opts.role,
+    PasswordHash: hashPassword_(opts.password, salt), PasswordSalt: salt,
+    Active: true, CreatedAt: nowIso_(), CreatedBy: opts.createdBy || ''
+  });
+  return accountId;
+}
+
+// What the front end is allowed to know about an account. Never includes the hash or salt.
+function publicAccount_(acc) {
+  return {
+    accountId: acc.AccountId, username: acc.Username, name: acc.Name,
+    role: acc.Role, active: acc.Active !== false
+  };
+}
+
+function issueSession_(accountId, kind) {
+  var token = Utilities.getUuid();
+  var ms = kind === 'qr' ? QR_SESSION_HOURS * 60 * 60 * 1000 : SESSION_DAYS * 24 * 60 * 60 * 1000;
+  appendRow_(SHEETS.SESSIONS, {
+    Token: token, AccountId: accountId, Kind: kind,
+    CreatedAt: nowIso_(), ExpiresAt: new Date(Date.now() + ms).toISOString()
+  });
+  return token;
+}
+
+function resolveSession_(token) {
+  if (!token) return null;
+  var row = findRowByKey_(SHEETS.SESSIONS, 'Token', token);
+  if (!row) return null;
+  if (new Date(row.ExpiresAt).getTime() < Date.now()) return null;
+  var acc = findAccountById_(row.AccountId);
+  if (!acc || acc.Active === false) return null;
+  return acc;
+}
+
+// Drops expired session rows so the sheet doesn't grow without bound (every scan of a
+// tag mints one). Called opportunistically from handleLogin_/handleQrLogin_ — those
+// already hold the script lock and already pay for a Sessions read.
+function pruneSessions_() {
+  var sheet = getSheet_(SHEETS.SESSIONS);
+  var rows = sheetToObjects_(SHEETS.SESSIONS);
+  var now = Date.now();
+  var stale = rows.filter(function (r) { return new Date(r.ExpiresAt).getTime() < now; });
+  // Delete bottom-up so earlier deletions don't shift the rows still to be removed.
+  stale.sort(function (a, b) { return b._row - a._row; }).forEach(function (r) { sheet.deleteRow(r._row); });
+  return stale.length;
+}
+
+function revokeSession_(token) {
+  if (!token) return false;
+  var row = findRowByKey_(SHEETS.SESSIONS, 'Token', token);
+  if (!row) return false;
+  getSheet_(SHEETS.SESSIONS).deleteRow(row._row);
+  return true;
+}
+
+// The single gate every non-public action goes through. Throws an auth error (which the
+// entry points turn into code:'session_invalid', so the front end knows to show the login)
+// when there's no valid session, and a plain error when the role simply isn't allowed.
+function authorize_(action, token) {
+  var acc = resolveSession_(token);
+  if (!acc) { var e = new Error('Not signed in'); e.authError = true; throw e; }
+  var allowed = ACTION_ROLES[action];
+  if (!allowed) throw new Error('Unknown action: ' + action);
+  if (allowed.indexOf(acc.Role) < 0) throw new Error('Your login is not allowed to do that');
+  return acc;
+}
+
+// ---------- auth API ----------
+
+function apiLogin_(body) {
+  pruneSessions_();
+  var acc = findAccountByUsername_(body.username);
+  var generic = 'Invalid username or password';
+  // A blank hash means the account can't be logged into with a password at all — that's
+  // how the QR pseudo-account is kept unreachable from the login form.
+  if (!acc || acc.Active === false || !acc.PasswordHash) throw new Error(generic);
+  if (!hashesEqual_(hashPassword_(body.password, acc.PasswordSalt), acc.PasswordHash)) throw new Error(generic);
+  return { token: issueSession_(acc.AccountId, 'password'), account: publicAccount_(acc) };
+}
+
+// Trades the shop operator key printed into a reel's QR tag for an operator session.
+function apiQrLogin_(body) {
+  var expected = getSetting_(OPERATOR_KEY_SETTING);
+  if (!expected) throw new Error('No operator key is configured — run setup() once from the Apps Script editor');
+  if (!hashesEqual_(String(body.key || ''), expected)) throw new Error('This tag is out of date — ask the controller to print a new one');
+  pruneSessions_();
+  var acc = findAccountById_(QR_ACCOUNT_ID);
+  if (!acc) throw new Error('Operator account is missing — run setup() once from the Apps Script editor');
+  return { token: issueSession_(QR_ACCOUNT_ID, 'qr'), account: publicAccount_(acc) };
+}
+
+function apiLogout_(body) {
+  revokeSession_(body.token);
+  return { ok: true };
+}
+
+function apiChangePassword_(acc, body) {
+  if (!acc.PasswordHash) throw new Error('This login has no password to change');
+  if (!hashesEqual_(hashPassword_(body.oldPassword, acc.PasswordSalt), acc.PasswordHash)) {
+    throw new Error('Current password is incorrect');
+  }
+  if (!body.newPassword || String(body.newPassword).length < 6) throw new Error('New password must be at least 6 characters');
+  var salt = makeSalt_();
+  updateRowByKey_(SHEETS.ACCOUNTS, 'AccountId', acc.AccountId, {
+    PasswordHash: hashPassword_(body.newPassword, salt), PasswordSalt: salt
+  });
+  return { ok: true };
+}
+
+function apiListAccounts_() {
+  return {
+    accounts: listAccounts_()
+      .filter(function (a) { return a.AccountId !== QR_ACCOUNT_ID; })
+      .map(publicAccount_)
+  };
+}
+
+function apiCreateAccount_(acc, body) {
+  createAccountRow_({
+    username: body.username, name: body.name, role: body.role,
+    password: body.password, createdBy: acc.Username
+  });
+  return apiListAccounts_();
+}
+
+function apiUpdateAccount_(acc, body) {
+  var target = findAccountById_(body.accountId);
+  if (!target || target.AccountId === QR_ACCOUNT_ID) throw new Error('Unknown account');
+  var patch = {};
+  if (body.name !== undefined) patch.Name = body.name;
+  if (body.role !== undefined) {
+    if (ROLES.indexOf(body.role) < 0) throw new Error('Unknown role: ' + body.role);
+    if (target.Role === 'Admin' && body.role !== 'Admin') assertNotLastAdmin_(target.AccountId);
+    patch.Role = body.role;
+  }
+  updateRowByKey_(SHEETS.ACCOUNTS, 'AccountId', body.accountId, patch);
+  return apiListAccounts_();
+}
+
+function apiResetPassword_(acc, body) {
+  var target = findAccountById_(body.accountId);
+  if (!target || target.AccountId === QR_ACCOUNT_ID) throw new Error('Unknown account');
+  if (!body.newPassword || String(body.newPassword).length < 6) throw new Error('Password must be at least 6 characters');
+  var salt = makeSalt_();
+  updateRowByKey_(SHEETS.ACCOUNTS, 'AccountId', body.accountId, {
+    PasswordHash: hashPassword_(body.newPassword, salt), PasswordSalt: salt
+  });
+  return { ok: true };
+}
+
+function apiSetAccountActive_(acc, body) {
+  var target = findAccountById_(body.accountId);
+  if (!target || target.AccountId === QR_ACCOUNT_ID) throw new Error('Unknown account');
+  var active = !!body.active;
+  if (!active && target.Role === 'Admin') assertNotLastAdmin_(target.AccountId);
+  updateRowByKey_(SHEETS.ACCOUNTS, 'AccountId', body.accountId, { Active: active });
+  if (!active) revokeAccountSessions_(body.accountId);
+  return apiListAccounts_();
+}
+
+function apiDeleteAccount_(acc, body) {
+  var target = findAccountById_(body.accountId);
+  if (!target || target.AccountId === QR_ACCOUNT_ID) throw new Error('Unknown account');
+  if (target.Role === 'Admin') assertNotLastAdmin_(target.AccountId);
+  getSheet_(SHEETS.ACCOUNTS).deleteRow(target._row);
+  revokeAccountSessions_(body.accountId);
+  return apiListAccounts_();
+}
+
+// Guards against locking everyone out of the admin side of the site.
+function assertNotLastAdmin_(accountId) {
+  var others = listAccounts_().filter(function (a) {
+    return a.Role === 'Admin' && a.Active !== false && String(a.AccountId) !== String(accountId);
+  });
+  if (!others.length) throw new Error('This is the only active admin — create another admin first');
+}
+
+function revokeAccountSessions_(accountId) {
+  var sheet = getSheet_(SHEETS.SESSIONS);
+  sheetToObjects_(SHEETS.SESSIONS)
+    .filter(function (s) { return String(s.AccountId) === String(accountId); })
+    .sort(function (a, b) { return b._row - a._row; })
+    .forEach(function (s) { sheet.deleteRow(s._row); });
+}
+
+function apiGetOperatorKey_() {
+  return { key: getSetting_(OPERATOR_KEY_SETTING) };
+}
+
+// Invalidates every QR tag already printed — the controller has to reprint them. Existing
+// scanned-tag sessions are killed too, so a rotation takes effect immediately rather than
+// leaving up to QR_SESSION_HOURS of access behind.
+function apiRotateOperatorKey_() {
+  var key = setSetting_(OPERATOR_KEY_SETTING, makeSalt_());
+  revokeAccountSessions_(QR_ACCOUNT_ID);
+  return { key: key };
+}
+
 // ---------- web entry points ----------
 
 function doGet(e) {
   try {
     var action = e.parameter.action || 'ping';
+    authorize_(action, e.parameter.token);
     var result;
     switch (action) {
       case 'ping': result = { ok: true, time: nowIso_() }; break;
@@ -294,10 +689,13 @@ function doGet(e) {
         result = cacheGetJson_('dash');
         if (!result) { result = apiDashboard_(); cacheSetJson_('dash', result); }
         break;
+      case 'getOperatorKey': result = apiGetOperatorKey_(); break;
+      case 'listAccounts': result = apiListAccounts_(); break;
       default: throw new Error('Unknown GET action: ' + action);
     }
     return jsonOut_({ ok: true, data: result });
   } catch (err) {
+    if (err && err.authError) return jsonOut_({ ok: false, error: 'Not signed in', code: 'session_invalid' });
     return jsonOut_({ ok: false, error: String(err && err.message || err) });
   }
 }
@@ -310,6 +708,16 @@ function doPost(e) {
     var lock = LockService.getScriptLock();
     lock.waitLock(15000);
     try {
+      // login/qrLogin are how a session is obtained, so they run before the auth gate.
+      // Everything else is denied unless ACTION_ROLES lists the caller's role.
+      if (PUBLIC_ACTIONS.indexOf(action) >= 0) {
+        if (action === 'login') result = apiLogin_(body);
+        else result = apiQrLogin_(body);
+        return jsonOut_({ ok: true, data: result });
+      }
+      if (action === 'logout') return jsonOut_({ ok: true, data: apiLogout_(body) });
+
+      var acc = authorize_(action, body.token);
       switch (action) {
         case 'createWorkOrder': result = apiCreateWorkOrder_(body); break;
         case 'updateWorkOrder': result = apiUpdateWorkOrder_(body); break;
@@ -325,6 +733,15 @@ function doPost(e) {
         case 'endDowntime': result = apiEndDowntime_(body); break;
         case 'setSectionStatus': result = apiSetSectionStatus_(body); break;
         case 'sendReport': result = apiSendReport_(body); break;
+
+        case 'changePassword': result = apiChangePassword_(acc, body); break;
+        case 'createAccount': result = apiCreateAccount_(acc, body); break;
+        case 'updateAccount': result = apiUpdateAccount_(acc, body); break;
+        case 'resetPassword': result = apiResetPassword_(acc, body); break;
+        case 'setAccountActive': result = apiSetAccountActive_(acc, body); break;
+        case 'deleteAccount': result = apiDeleteAccount_(acc, body); break;
+        case 'rotateOperatorKey': result = apiRotateOperatorKey_(); break;
+
         default: throw new Error('Unknown POST action: ' + action);
       }
     } finally {
@@ -332,6 +749,7 @@ function doPost(e) {
     }
     return jsonOut_({ ok: true, data: result });
   } catch (err) {
+    if (err && err.authError) return jsonOut_({ ok: false, error: 'Not signed in', code: 'session_invalid' });
     return jsonOut_({ ok: false, error: String(err && err.message || err) });
   }
 }
