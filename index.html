@@ -1175,7 +1175,7 @@ function viewController(isNew){
   '<section class="card"><h2>Braidline — reference targets</h2>' +
     '<div class="grid g4">' +
       '<div class="fld"><label>Longs — quantity needed</label><input id="f_brLongsEndsUp" type="number" step="1" value="'+v('BR_Longs')+'"></div>' +
-      '<div class="fld"><label>Xbraids — ends up</label><input id="f_brXbraidEndsUp" type="number" step="1" value="'+v('BR_XbraidEndsUp')+'"></div>' +
+      '<div class="fld"><label>Ends up</label><input id="f_brXbraidEndsUp" type="number" step="1" value="'+v('BR_XbraidEndsUp')+'"></div>' +
       '<div class="fld"><label>Target OD (in)</label><input id="f_brTargetOD" type="number" step="0.001" value="'+v('BR_TargetOD')+'"></div>' +
       '<div class="fld"><label>OD tolerance ± (in)</label><input id="f_brODTol" type="number" step="0.001" value="'+v('BR_ODTol')+'"></div>' +
       '<div class="fld"><label>Target pitch (in) — cross braid</label><input id="f_brTargetPitch" type="number" step="0.01" value="'+v('BR_TargetPitch')+'"></div>' +
@@ -1582,7 +1582,7 @@ function referenceTargetsHtml(wo, sec){
   if (sec==='Braidline'){
     return '<div class="grid g4">' +
       '<div class="kpi"><b>Longs</b><span>'+fmtTol(wo.BR_Longs)+'</span><i>quantity needed</i></div>' +
-      '<div class="kpi"><b>Xbraids — ends up</b><span>'+fmtTol(wo.BR_XbraidEndsUp)+'</span></div>' +
+      '<div class="kpi"><b>Ends up</b><span>'+fmtTol(wo.BR_XbraidEndsUp)+'</span></div>' +
       '<div class="kpi"><b>Target pitch</b><span>'+fmtTol(wo.BR_TargetPitch)+'</span><i>&plusmn; '+fmtTol(wo.BR_PitchTol)+'</i></div>' +
       '<div class="kpi"><b>Target OD / length</b><span>'+fmtTol(wo.BR_TargetOD)+'</span><i>&plusmn; '+fmtTol(wo.BR_ODTol)+' &middot; '+fmtTol(wo.BR_TargetLength)+' ft</i></div>' +
       '<div class="kpi"><b>Line speed</b><span>'+fmtTol(wo.BR_LineSpeed)+'</span><i>ft/min'+lineSpeedHint(wo,'BR')+'</i></div>' +

@@ -1662,7 +1662,7 @@ function buildReportHtml_(data) {
 
   h += '<h3 style="border-bottom:1px solid #ccc;padding-bottom:3px">Braidline — ' + esc(pipe.BR_Status) + '</h3>';
   h += '<div style="color:#555;margin-bottom:6px">Longs: ' + esc(wo.BR_Longs) +
-    ' &nbsp;·&nbsp; Xbraids: ' + esc(wo.BR_XbraidEndsUp) + ' ends up' +
+    ' &nbsp;·&nbsp; Ends up: ' + esc(wo.BR_XbraidEndsUp) +
     ' &nbsp;·&nbsp; Target pitch ' + esc(wo.BR_TargetPitch) + ' ± ' + esc(wo.BR_PitchTol) +
     ' &nbsp;·&nbsp; Target OD ' + esc(wo.BR_TargetOD) + ' ± ' + esc(wo.BR_ODTol) +
     (wo.BR_LineSpeed !== '' ? ' &nbsp;·&nbsp; Line speed ' + esc(wo.BR_LineSpeed) + ' ft/min' : '') + '</div>';
