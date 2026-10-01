@@ -363,7 +363,11 @@ function handleApiFailure(j){
     e.sessionExpired = true;
     throw e;
   }
-  throw new Error((j && j.error) || 'Request failed');
+  // The server answered, it just said no — "Reel not found", "not allowed", and so on.
+  // Flagged so the connection indicator counts it as reachable rather than as an outage.
+  var appErr = new Error((j && j.error) || 'Request failed');
+  appErr.appError = true;
+  throw appErr;
 }
 
 function apiGet(action, params){
@@ -373,8 +377,9 @@ function apiGet(action, params){
   var url = API_URL + '?action=' + encodeURIComponent(action) + (qs ? '&' + qs : '');
   return fetch(url).then(function(r){ return r.json(); }).then(function(j){
     if (!j.ok) return handleApiFailure(j);
+    noteApiSuccess();
     return j.data;
-  });
+  }).catch(function(err){ noteApiFailure(err); throw err; });
 }
 function apiPost(action, body){
   var payload = Object.assign({action: action}, body || {});
@@ -385,34 +390,82 @@ function apiPost(action, body){
     body: JSON.stringify(payload)
   }).then(function(r){ return r.json(); }).then(function(j){
     if (!j.ok) return handleApiFailure(j);
+    noteApiSuccess();
     return j.data;
-  });
+  }).catch(function(err){ noteApiFailure(err); throw err; });
+}
+
+/* Connection status.
+ *
+ * This used to fire its own 'ping' every 30 seconds regardless of what else was
+ * happening — a whole extra round trip per half-minute, on top of the view's own
+ * polling, purely to light up a word in the header. Now every real call reports its
+ * own outcome, and a ping only goes out when nothing else has talked to the server
+ * recently (an idle screen).
+ *
+ * It also took a single failure as proof of being offline. Apps Script throws the odd
+ * transient error under load, so one blip used to flash "Offline / unreachable" at
+ * people whose connection was fine. It now takes two in a row.
+ */
+var CONN = { lastOkAt: 0, failures: 0 };
+var CONN_IDLE_MS = 90000;      // only ping if nothing succeeded in this long
+var CONN_FAIL_THRESHOLD = 2;   // consecutive failures before saying we're offline
+
+function setStatus(text, cls){
+  var el = E('status');
+  if (!el) return;
+  el.textContent = text;
+  el.className = cls || '';
+}
+
+function noteApiSuccess(){
+  CONN.lastOkAt = Date.now();
+  CONN.failures = 0;
+  if (isSignedIn()) setStatus('Connected', 'ok');
+}
+
+function noteApiFailure(err){
+  // An expired session isn't a connectivity problem — handleApiFailure already sends
+  // the user to the login screen, and calling it an outage would just mislead.
+  if (err && err.sessionExpired) return;
+  // The server answering "no" proves it's reachable, which is all this indicator claims.
+  if (err && err.appError){ noteApiSuccess(); return; }
+  CONN.failures++;
+  if (CONN.failures >= CONN_FAIL_THRESHOLD) setStatus('Offline / unreachable', 'bad');
 }
 
 function checkConnection(){
-  var el = document.getElementById('status');
-  if (!API_URL || API_URL.indexOf('PASTE_YOUR') === 0){
-    el.textContent = 'API not configured';
-    el.className = 'bad';
-    return;
-  }
-  if (!isSignedIn()){
-    el.textContent = 'Signed out';
-    el.className = '';
-    return;
-  }
-  // 'ping' needs a token like everything else, so a failure here is ambiguous between
-  // "network down" and "session died". handleApiFailure already routes the expired case
-  // to the login screen; this only has to avoid mislabelling it as an outage.
-  apiGet('ping').then(function(){
-    el.textContent = 'Connected';
-    el.className = 'ok';
-  }).catch(function(err){
-    if (err && err.sessionExpired) return;
-    el.textContent = 'Offline / unreachable';
-    el.className = 'bad';
-  });
+  if (!API_URL || API_URL.indexOf('PASTE_YOUR') === 0){ setStatus('API not configured', 'bad'); return; }
+  if (!isSignedIn()){ setStatus('Signed out', ''); return; }
+  // Something else already proved the connection works — don't spend a request saying so.
+  if (Date.now() - CONN.lastOkAt < CONN_IDLE_MS) return;
+  if (document.hidden) return;
+  apiGet('ping').catch(function(){ /* noteApiFailure already ran inside apiGet */ });
 }
+
+/* Polling that stops when nobody's looking.
+ *
+ * Five views refresh on a timer. Left open in a background tab — which is exactly what
+ * a dashboard does all day — they kept hammering the backend for a screen nobody could
+ * see. These pause while the tab is hidden and refresh once immediately on return, so
+ * you still come back to current data.
+ */
+var POLLERS = [];
+function pollEvery(fn, ms){
+  var id = setInterval(function(){ if (!document.hidden) fn(); }, ms);
+  POLLERS.push({fn: fn, id: id});
+  return id;
+}
+// Every view registers its refresh here and go() clears the lot on navigation, so a
+// timer can't outlive the screen it belongs to and keep polling in the background.
+function stopPolling(){
+  POLLERS.forEach(function(p){ clearInterval(p.id); });
+  POLLERS = [];
+}
+document.addEventListener('visibilitychange', function(){
+  if (document.hidden) return;
+  POLLERS.forEach(function(p){ try { p.fn(); } catch (e) { /* view torn down mid-flight */ } });
+});
 
 /* ============================= UTIL ============================= */
 function E(id){ return document.getElementById(id); }
@@ -550,7 +603,8 @@ function go(view, opts){
   if (opts && opts.pipeCode !== undefined) STATE.pipeCode = opts.pipeCode;
   if (opts && opts.workOrderCode !== undefined) STATE.workOrderCode = opts.workOrderCode;
   if (opts && opts.section) STATE.section = opts.section;
-  if (STATE.dashTimer){ clearInterval(STATE.dashTimer); STATE.dashTimer = null; }
+  stopPolling();
+  STATE.dashTimer = null;
   render();
 }
 
@@ -2101,7 +2155,7 @@ function viewDashboard(){
 
 function bindDashboard(){
   loadDashboard();
-  STATE.dashTimer = setInterval(loadDashboard, 20000);
+  STATE.dashTimer = pollEvery(loadDashboard, 20000);
 }
 
 function loadDashboard(){
@@ -2201,7 +2255,7 @@ function viewTimers(){
 
 function bindTimers(){
   loadTimers();
-  STATE.dashTimer = setInterval(loadTimers, 20000);
+  STATE.dashTimer = pollEvery(loadTimers, 20000);
 }
 
 function loadTimers(){
@@ -2318,7 +2372,7 @@ function viewPipeDetail(){
 
 function bindPipeDetail(){
   loadPipeDetail(STATE.pipeCode);
-  STATE.dashTimer = setInterval(function(){ loadPipeDetail(STATE.pipeCode); }, 20000);
+  STATE.dashTimer = pollEvery(function(){ loadPipeDetail(STATE.pipeCode); }, 20000);
 }
 
 function loadPipeDetail(pipeCode){
@@ -2492,7 +2546,7 @@ function viewWoDashboard(){
 
 function bindWoDashboard(){
   loadWoDashboard();
-  STATE.dashTimer = setInterval(loadWoDashboard, 20000);
+  STATE.dashTimer = pollEvery(loadWoDashboard, 20000);
 }
 
 function loadWoDashboard(){
@@ -2726,8 +2780,8 @@ function viewReports(){ return '<div id="rpRoot"><p class="muted">Loading&hellip
 
 function bindReports(){
   if (STATE.rpPipe) loadReport(STATE.rpPipe); else loadReportIndex();
-  // go() clears STATE.dashTimer on navigation, so this stops itself when you leave.
-  STATE.dashTimer = setInterval(function(){
+  // go() calls stopPolling() on navigation, so this stops itself when you leave.
+  STATE.dashTimer = pollEvery(function(){
     if (STATE.view === 'reports' && STATE.rpPipe) loadReport(STATE.rpPipe, true);
   }, 20000);
 }
@@ -3059,7 +3113,7 @@ function bindTV(){
   STATE.tvPage = 0;
   STATE.tvDrillWO = null; STATE.tvDrillPipe = null; STATE.tvSection = null;
   loadTVBoard();
-  STATE.dashTimer = setInterval(loadTVBoard, 20000);
+  STATE.dashTimer = pollEvery(loadTVBoard, 20000);
   STATE.tvPageTimer = setInterval(advanceTVPage, 8000);
   startTVClock();
 }

@@ -87,7 +87,13 @@ var HEADERS = {
     'BL_Status', 'BL_StartedAt', 'BL_CompletedAt', 'BL_ActualLength',
     'BR_Status', 'BR_StartedAt', 'BR_CompletedAt', 'BR_ActualLength',
     'CV_Status', 'CV_StartedAt', 'CV_CompletedAt', 'CV_ActualLength',
-    'OverallStatus', 'LastUpdated', 'LastEmailAt'
+    'OverallStatus', 'LastUpdated', 'LastEmailAt',
+
+    // Last reading, denormalised onto the reel (appended per the append-only rule).
+    // The dashboard needs one reading per reel; deriving that meant scanning the whole
+    // Readings sheet — every row, every work order, all of plant history — on every
+    // 20-second poll. Written by apiAddReading_, which already has the values in hand.
+    'LastReadingAt', 'LastReadingType', 'LastReadingValue', 'LastReadingInTol'
   ],
   Readings: ['RowId', 'PipeCode', 'Section', 'Timestamp', 'Operator', 'Type', 'Value', 'InTol', 'Footage'],
   ThicknessChecks: ['RowId', 'PipeCode', 'Section', 'Position', 'Timestamp', 'Operator', 'OD',
@@ -285,6 +291,12 @@ function setup() {
 
   var msg = 'Sheets are ready.';
 
+  // One-off backfill of the denormalised last-reading columns, so reels that already
+  // have history don't show a blank "Last reading" on the dashboard until someone logs
+  // another one. Scans Readings once here rather than on every dashboard poll forever.
+  var backfilled = backfillLastReadings_();
+  if (backfilled) msg += '\n\nFilled in the last-reading summary on ' + backfilled + ' existing reel(s).';
+
   // The pseudo-account every scanned-tag session is issued against (see QR_ACCOUNT_ID).
   if (!findAccountById_(QR_ACCOUNT_ID)) {
     appendRow_(SHEETS.ACCOUNTS, {
@@ -319,6 +331,38 @@ function setup() {
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* no UI when run headless — the log has it */ }
 }
 
+// Writes each reel's newest reading onto its own row. Safe to re-run: it only touches
+// reels whose stored summary is missing or older than what's actually in Readings.
+function backfillLastReadings_() {
+  var pipes = sheetToObjects_(SHEETS.PIPES);
+  if (!pipes.length) return 0;
+
+  var newest = {};
+  sheetToObjects_(SHEETS.READINGS).forEach(function (r) {
+    var cur = newest[r.PipeCode];
+    if (!cur || new Date(r.Timestamp) > new Date(cur.Timestamp)) newest[r.PipeCode] = r;
+  });
+
+  var sheet = getSheet_(SHEETS.PIPES);
+  var headers = HEADERS[SHEETS.PIPES];
+  var count = 0;
+  pipes.forEach(function (p) {
+    var r = newest[p.PipeCode];
+    if (!r) return;
+    if (p.LastReadingAt && new Date(p.LastReadingAt) >= new Date(r.Timestamp)) return;
+    var range = sheet.getRange(p._row, 1, 1, headers.length);
+    var values = range.getValues()[0];
+    values[headers.indexOf('LastReadingAt')] = r.Timestamp;
+    values[headers.indexOf('LastReadingType')] = r.Type;
+    values[headers.indexOf('LastReadingValue')] = r.Value;
+    values[headers.indexOf('LastReadingInTol')] = r.InTol;
+    range.setValues([values]);
+    count++;
+  });
+  if (count) { _memoDrop_(SHEETS.PIPES); cacheClearDash_(); }
+  return count;
+}
+
 /* ---------- settings ---------- */
 
 function getSetting_(key) {
@@ -343,11 +387,28 @@ function getSheet_(name) {
 
 // ---------- generic sheet <-> object helpers ----------
 
+/* Per-execution memo for full-sheet reads.
+ *
+ * A single request often reads the same sheet several times over — findRowByKey_ then
+ * updateRowByKey_, or a chain of helpers that each start with sheetToObjects_. Reading
+ * a sheet is the expensive part of everything this backend does, so the second and
+ * later reads within one request are served from here.
+ *
+ * Two things keep it honest: Apps Script can reuse a warm JS context across separate
+ * web app invocations, so doGet/doPost reset it at the top rather than trusting it to
+ * be fresh; and every write drops the memo for the sheet it touched, so nothing can
+ * read back stale rows it just changed.
+ */
+var _sheetMemo = {};
+function _memoReset_() { _sheetMemo = {}; }
+function _memoDrop_(sheetName) { delete _sheetMemo[sheetName]; }
+
 function sheetToObjects_(sheetName) {
+  if (_sheetMemo[sheetName]) return _sheetMemo[sheetName];
   var sheet = getSheet_(sheetName);
   var lastRow = sheet.getLastRow();
   var headers = HEADERS[sheetName];
-  if (lastRow < 2) return [];
+  if (lastRow < 2) { _sheetMemo[sheetName] = []; return []; }
   var values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
   var out = [];
   for (var r = 0; r < values.length; r++) {
@@ -360,6 +421,7 @@ function sheetToObjects_(sheetName) {
     }
     if (!blank) { obj._row = r + 2; out.push(obj); }
   }
+  _sheetMemo[sheetName] = out;
   return out;
 }
 
@@ -368,6 +430,7 @@ function appendRow_(sheetName, obj) {
   var headers = HEADERS[sheetName];
   var row = headers.map(function (h) { return (obj[h] === undefined || obj[h] === null) ? '' : obj[h]; });
   sheet.appendRow(row);
+  _memoDrop_(sheetName);
   return sheet.getLastRow();
 }
 
@@ -381,10 +444,17 @@ function updateRowByKey_(sheetName, keyField, keyValue, patch) {
   for (var i = 0; i < keys.length; i++) {
     if (String(keys[i][0]) === String(keyValue)) {
       var rowNum = i + 2;
+      // Read the row, patch it in memory, write it back in one call. Setting each cell
+      // individually meant a round trip per field — saving a work order patches ~60 of
+      // them, so that was ~60 round trips for what is now two.
+      var range = sheet.getRange(rowNum, 1, 1, headers.length);
+      var values = range.getValues()[0];
       Object.keys(patch).forEach(function (k) {
-        var col = headers.indexOf(k) + 1;
-        if (col > 0) sheet.getRange(rowNum, col).setValue(patch[k]);
+        var idx = headers.indexOf(k);
+        if (idx >= 0) values[idx] = (patch[k] === undefined || patch[k] === null) ? '' : patch[k];
       });
+      range.setValues([values]);
+      _memoDrop_(sheetName);
       return true;
     }
   }
@@ -406,6 +476,7 @@ function deleteRowsWhere_(sheetName, predicate) {
   var doomed = sheetToObjects_(sheetName).filter(predicate);
   doomed.sort(function (a, b) { return b._row - a._row; })
     .forEach(function (r) { sheet.deleteRow(r._row); });
+  _memoDrop_(sheetName);
   return doomed.length;
 }
 
@@ -419,15 +490,18 @@ function updateRowByCode_(sheetName, code, patch) { return updateRowByKey_(sheet
 // cache turns repeat polls into a CacheService hit instead of 8+ full-sheet reads. TTL is
 // kept under the poll interval, and every write clears the affected keys so nobody's own
 // change is ever masked by a stale cache entry.
-var CACHE_TTL_SEC = 15;
+// Longer than the front end's 20s poll on purpose: at 15s every poll from a single
+// browser missed, so the cache only ever helped when two people watched at once. Writes
+// still clear it, so your own changes are never hidden behind it.
+var CACHE_TTL_SEC = 45;
 
 function cache_() { return CacheService.getScriptCache(); }
 
 function cacheGetJson_(key) {
   try { var v = cache_().get(key); return v ? JSON.parse(v) : null; } catch (e) { return null; }
 }
-function cacheSetJson_(key, obj) {
-  try { cache_().put(key, JSON.stringify(obj), CACHE_TTL_SEC); } catch (e) { /* over 100KB or cache unavailable — just skip caching */ }
+function cacheSetJson_(key, obj, ttlSec) {
+  try { cache_().put(key, JSON.stringify(obj), ttlSec || CACHE_TTL_SEC); } catch (e) { /* over 100KB or cache unavailable — just skip caching */ }
 }
 function cacheClearPipe_(pipeCode) {
   try { cache_().removeAll(['dash', 'pipe:' + pipeCode]); } catch (e) { /* non-fatal */ }
@@ -517,14 +591,58 @@ function issueSession_(accountId, kind) {
   return token;
 }
 
+/* Resolving a token used to cost two full-sheet reads (Sessions, then Accounts) on
+ * EVERY request — including each 20-second dashboard poll and every reading saved from
+ * the floor. That was by far the most expensive thing the backend did, because it was
+ * the one thing nothing could skip.
+ *
+ * Now a resolved session is cached for SESSION_CACHE_SEC, so a signed-in browser's
+ * requests cost nothing to authorize. The trade is that revoking access could take up
+ * to that long to bite, so everything that revokes — logout, disabling, deleting, a
+ * role change, rotating the operator key — drops the cached entries explicitly rather
+ * than waiting for them to expire. See dropCachedSessionsFor_.
+ */
+var SESSION_CACHE_SEC = 600;
+
+function sessionCacheKey_(token) { return 'sess:' + token; }
+
+// Only what authorize_ and the handlers actually need — never the password hash or salt.
+function slimAccount_(acc) {
+  return { AccountId: acc.AccountId, Username: acc.Username, Name: acc.Name, Role: acc.Role, Active: acc.Active !== false };
+}
+
 function resolveSession_(token) {
   if (!token) return null;
+
+  var cached = cacheGetJson_(sessionCacheKey_(token));
+  if (cached) {
+    // Still honour the session's own expiry, so a cached entry can't outlive the login.
+    if (new Date(cached.expiresAt).getTime() < Date.now()) return null;
+    return cached.account;
+  }
+
   var row = findRowByKey_(SHEETS.SESSIONS, 'Token', token);
   if (!row) return null;
   if (new Date(row.ExpiresAt).getTime() < Date.now()) return null;
   var acc = findAccountById_(row.AccountId);
   if (!acc || acc.Active === false) return null;
-  return acc;
+
+  var slim = slimAccount_(acc);
+  cacheSetJson_(sessionCacheKey_(token), { account: slim, expiresAt: row.ExpiresAt }, SESSION_CACHE_SEC);
+  return slim;
+}
+
+function dropCachedSession_(token) {
+  try { cache_().remove(sessionCacheKey_(token)); } catch (e) { /* non-fatal */ }
+}
+
+// Drops the cached authorizations for every live session of an account, so a disable,
+// delete or role change takes effect on the account's next request rather than whenever
+// the cache happens to expire.
+function dropCachedSessionsFor_(accountId) {
+  sheetToObjects_(SHEETS.SESSIONS)
+    .filter(function (s) { return String(s.AccountId) === String(accountId); })
+    .forEach(function (s) { dropCachedSession_(s.Token); });
 }
 
 // Drops expired session rows so the sheet doesn't grow without bound (every scan of a
@@ -537,6 +655,7 @@ function pruneSessions_() {
   var stale = rows.filter(function (r) { return new Date(r.ExpiresAt).getTime() < now; });
   // Delete bottom-up so earlier deletions don't shift the rows still to be removed.
   stale.sort(function (a, b) { return b._row - a._row; }).forEach(function (r) { sheet.deleteRow(r._row); });
+  _memoDrop_(SHEETS.SESSIONS);
   return stale.length;
 }
 
@@ -545,6 +664,8 @@ function revokeSession_(token) {
   var row = findRowByKey_(SHEETS.SESSIONS, 'Token', token);
   if (!row) return false;
   getSheet_(SHEETS.SESSIONS).deleteRow(row._row);
+  dropCachedSession_(token);
+  _memoDrop_(SHEETS.SESSIONS);
   return true;
 }
 
@@ -590,8 +711,11 @@ function apiLogout_(body) {
 }
 
 function apiChangePassword_(acc, body) {
-  if (!acc.PasswordHash) throw new Error('This login has no password to change');
-  if (!hashesEqual_(hashPassword_(body.oldPassword, acc.PasswordSalt), acc.PasswordHash)) {
+  // authorize_ hands back the slim cached account, which deliberately carries no hash
+  // or salt — read the real row for the one action that needs them.
+  var full = findAccountById_(acc.AccountId);
+  if (!full || !full.PasswordHash) throw new Error('This login has no password to change');
+  if (!hashesEqual_(hashPassword_(body.oldPassword, full.PasswordSalt), full.PasswordHash)) {
     throw new Error('Current password is incorrect');
   }
   if (!body.newPassword || String(body.newPassword).length < 6) throw new Error('New password must be at least 6 characters');
@@ -629,6 +753,8 @@ function apiUpdateAccount_(acc, body) {
     patch.Role = body.role;
   }
   updateRowByKey_(SHEETS.ACCOUNTS, 'AccountId', body.accountId, patch);
+  // A role change must bite on the next request, not whenever the cache expires.
+  dropCachedSessionsFor_(body.accountId);
   return apiListAccounts_();
 }
 
@@ -658,6 +784,7 @@ function apiDeleteAccount_(acc, body) {
   if (!target || target.AccountId === QR_ACCOUNT_ID) throw new Error('Unknown account');
   if (target.Role === 'Admin') assertNotLastAdmin_(target.AccountId);
   getSheet_(SHEETS.ACCOUNTS).deleteRow(target._row);
+  _memoDrop_(SHEETS.ACCOUNTS);
   revokeAccountSessions_(body.accountId);
   return apiListAccounts_();
 }
@@ -671,11 +798,13 @@ function assertNotLastAdmin_(accountId) {
 }
 
 function revokeAccountSessions_(accountId) {
+  dropCachedSessionsFor_(accountId);
   var sheet = getSheet_(SHEETS.SESSIONS);
   sheetToObjects_(SHEETS.SESSIONS)
     .filter(function (s) { return String(s.AccountId) === String(accountId); })
     .sort(function (a, b) { return b._row - a._row; })
     .forEach(function (s) { sheet.deleteRow(s._row); });
+  _memoDrop_(SHEETS.SESSIONS);
 }
 
 function apiGetOperatorKey_() {
@@ -694,6 +823,7 @@ function apiRotateOperatorKey_() {
 // ---------- web entry points ----------
 
 function doGet(e) {
+  _memoReset_(); // Apps Script may reuse a warm context across invocations
   try {
     var action = e.parameter.action || 'ping';
     authorize_(action, e.parameter.token);
@@ -725,6 +855,7 @@ function doGet(e) {
 }
 
 function doPost(e) {
+  _memoReset_(); // Apps Script may reuse a warm context across invocations
   try {
     var body = JSON.parse(e.postData.contents);
     var action = body.action;
@@ -1011,7 +1142,13 @@ function apiAddReading_(body) {
   };
   appendRow_(SHEETS.READINGS, row);
   markSectionStarted_(pipeCode, section);
-  touchPipe_(pipeCode);
+  // Carry the reading onto the reel so the dashboard never has to scan Readings for it.
+  updateRowByKey_(SHEETS.PIPES, 'PipeCode', pipeCode, {
+    LastReadingAt: row.Timestamp, LastReadingType: row.Type,
+    LastReadingValue: row.Value, LastReadingInTol: row.InTol,
+    LastUpdated: nowIso_()
+  });
+  cacheClearPipe_(pipeCode);
   return row;
 }
 
@@ -1284,15 +1421,18 @@ function apiSetSectionStatus_(body) {
 function apiDashboard_() {
   var pipes = sheetToObjects_(SHEETS.PIPES);
   var workOrders = sheetToObjects_(SHEETS.WORKORDERS);
-  var readings = sheetToObjects_(SHEETS.READINGS);
   var problems = sheetToObjects_(SHEETS.PROBLEMS);
   var downtimeEvents = sheetToObjects_(SHEETS.DOWNTIME);
 
-  var lastByPipe = {};
-  readings.forEach(function (r) {
-    var cur = lastByPipe[r.PipeCode];
-    if (!cur || new Date(r.Timestamp) > new Date(cur.Timestamp)) lastByPipe[r.PipeCode] = r;
-  });
+  // Reads the reel's own LastReading* columns rather than scanning the Readings sheet.
+  // Dashboard cost is now proportional to the number of reels, not to how much history
+  // the plant has ever accumulated. Reels last written to before those columns existed
+  // simply report no last reading until their next one (setup() backfills them).
+  function lastReadingOf(p) {
+    if (!p.LastReadingAt) return null;
+    return { Timestamp: p.LastReadingAt, Type: p.LastReadingType, Value: p.LastReadingValue, InTol: p.LastReadingInTol };
+  }
+
   var openProblemsByPipe = {};
   problems.forEach(function (p) {
     if (p.Status !== 'Open') return;
@@ -1319,7 +1459,7 @@ function apiDashboard_() {
     var prodTiming = curSection ? computeProdTiming_(wo, p, curSection, downtimeEvents) : null;
     groups[key].pipes.push({
       pipeCode: p.PipeCode, blStatus: p.BL_Status, brStatus: p.BR_Status, cvStatus: p.CV_Status,
-      overallStatus: p.OverallStatus, lastUpdated: p.LastUpdated, lastReading: lastByPipe[p.PipeCode] || null,
+      overallStatus: p.OverallStatus, lastUpdated: p.LastUpdated, lastReading: lastReadingOf(p),
       blActualLength: p.BL_ActualLength, brActualLength: p.BR_ActualLength, cvActualLength: p.CV_ActualLength,
       openProblems: openProblemsByPipe[p.PipeCode] || 0,
       prodSection: curSection, prodTiming: prodTiming
