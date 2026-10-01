@@ -1205,7 +1205,8 @@ function viewController(isNew){
 
   '<section class="card"><h2>Braidline — reference targets</h2>' +
     '<div class="grid g4">' +
-      '<div class="fld"><label>Material</label><input id="f_brMaterial" value="'+v('BR_Material')+'" placeholder="braid yarn"></div>' +
+      '<div class="fld"><label>Longs — material</label><input id="f_brLongsMaterial" value="'+v('BR_LongsMaterial')+'" placeholder="longitudinal yarn"></div>' +
+      '<div class="fld"><label>Cross braid — material</label><input id="f_brXbraidMaterial" value="'+v('BR_XbraidMaterial')+'" placeholder="cross braid yarn"></div>' +
       '<div class="fld"><label>Longs — quantity needed</label><input id="f_brLongsEndsUp" type="number" step="1" value="'+v('BR_Longs')+'"></div>' +
       '<div class="fld"><label>Ends up</label><input id="f_brXbraidEndsUp" type="number" step="1" value="'+v('BR_XbraidEndsUp')+'"></div>' +
       '<div class="fld"><label>Target OD (in)</label><input id="f_brTargetOD" type="number" step="0.001" value="'+v('BR_TargetOD')+'"></div>' +
@@ -1256,7 +1257,7 @@ function collectControllerForm(isNew){
     blTargetOD: E('f_blTargetOD').value, blODTol: E('f_blODTol').value,
     blTargetWall: E('f_blTargetWall').value, blTargetID: E('f_blTargetID').value,
     blTargetLength: E('f_blTargetLength').value, blLineSpeed: E('f_blLineSpeed').value, blNotes: E('f_blNotes').value,
-    brMaterial: E('f_brMaterial').value,
+    brLongsMaterial: E('f_brLongsMaterial').value, brXbraidMaterial: E('f_brXbraidMaterial').value,
     brLongsEndsUp: E('f_brLongsEndsUp').value, brXbraidEndsUp: E('f_brXbraidEndsUp').value,
     brTargetPitch: E('f_brTargetPitch').value, brPitchTol: E('f_brPitchTol').value,
     brTargetOD: E('f_brTargetOD').value, brODTol: E('f_brODTol').value,
@@ -1614,7 +1615,8 @@ function referenceTargetsHtml(wo, sec){
   }
   if (sec==='Braidline'){
     return '<div class="grid g4">' +
-      '<div class="kpi"><b>Material</b><span style="font-size:13px">'+fmtTol(wo.BR_Material)+'</span><i>braid yarn</i></div>' +
+      '<div class="kpi"><b>Longs — material</b><span style="font-size:13px">'+fmtTol(wo.BR_LongsMaterial)+'</span></div>' +
+      '<div class="kpi"><b>Cross braid — material</b><span style="font-size:13px">'+fmtTol(wo.BR_XbraidMaterial)+'</span></div>' +
       '<div class="kpi"><b>Longs</b><span>'+fmtTol(wo.BR_Longs)+'</span><i>quantity needed</i></div>' +
       '<div class="kpi"><b>Ends up</b><span>'+fmtTol(wo.BR_XbraidEndsUp)+'</span></div>' +
       '<div class="kpi"><b>Target pitch</b><span>'+fmtTol(wo.BR_TargetPitch)+'</span><i>&plusmn; '+fmtTol(wo.BR_PitchTol)+'</i></div>' +

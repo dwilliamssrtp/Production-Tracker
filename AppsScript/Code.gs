@@ -82,8 +82,9 @@ var HEADERS = {
     // it away and when. Archiving is reversible — permanent deletion is a separate act.
     'Archived', 'ArchivedAt', 'ArchivedBy',
 
-    // Braid yarn for the reinforcement layer (appended per the append-only rule).
-    'BR_Material'
+    // Braid yarns (appended per the append-only rule). The longitudinals and the cross
+    // braid can run different yarns, so they're recorded separately.
+    'BR_LongsMaterial', 'BR_XbraidMaterial'
   ],
   Pipes: [
     'PipeCode', 'WorkOrderCode', 'CreatedAt', 'CreatedBy',
@@ -223,7 +224,7 @@ var WO_FIELD_MAP = {
   blLinerTZ1: 'BL_LinerTZ1', blLinerTZ2: 'BL_LinerTZ2', blLinerTZ3: 'BL_LinerTZ3', blLinerClamp: 'BL_LinerClamp', blLinerFlange: 'BL_LinerFlange',
   blLinerThickness: 'BL_LinerThickness',
 
-  brMaterial: 'BR_Material',
+  brLongsMaterial: 'BR_LongsMaterial', brXbraidMaterial: 'BR_XbraidMaterial',
   brLongsEndsUp: 'BR_Longs', brXbraidEndsUp: 'BR_XbraidEndsUp',
   brTargetPitch: 'BR_TargetPitch', brPitchTol: 'BR_PitchTol', brTargetOD: 'BR_TargetOD', brODTol: 'BR_ODTol',
   brTargetLength: 'BR_TargetLength', brNotes: 'BR_Notes',
@@ -238,7 +239,7 @@ var WO_FIELD_MAP = {
 };
 // The subset of WO_FIELD_MAP keys that are free text rather than numeric.
 var WO_TEXT_KEYS = ['customer', 'productCode', 'pipeSize', 'emailTo', 'blNotes', 'brNotes', 'cvNotes',
-  'blBackerMaterial', 'blBondMaterial', 'blLinerMaterial', 'brMaterial'];
+  'blBackerMaterial', 'blBondMaterial', 'blLinerMaterial', 'brLongsMaterial', 'brXbraidMaterial'];
 
 function valueForField_(body, key) {
   var v = body[key];
@@ -383,9 +384,10 @@ function setSetting_(key, value) {
 }
 
 function getSheet_(name) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName(name);
+  if (_sheetHandles[name]) return _sheetHandles[name];
+  var sheet = ss_().getSheetByName(name);
   if (!sheet) throw new Error('Sheet not found: ' + name + ' — run setup() first.');
+  _sheetHandles[name] = sheet;
   return sheet;
 }
 
@@ -404,13 +406,45 @@ function getSheet_(name) {
  * read back stale rows it just changed.
  */
 var _sheetMemo = {};
-function _memoReset_() { _sheetMemo = {}; }
-function _memoDrop_(sheetName) { delete _sheetMemo[sheetName]; }
+var _ssHandle = null;      // the Spreadsheet object
+var _sheetHandles = {};    // Sheet objects by name
+var _lastRowMemo = {};     // getLastRow() results by sheet name
+
+function _memoReset_() {
+  _sheetMemo = {};
+  _lastRowMemo = {};
+  // Handles are reset too: Apps Script can reuse a warm JS context between separate web
+  // app invocations, and a handle carried over from a previous one is not safe to trust.
+  _ssHandle = null;
+  _sheetHandles = {};
+}
+function _memoDrop_(sheetName) {
+  delete _sheetMemo[sheetName];
+  delete _lastRowMemo[sheetName];
+}
+
+/* getActiveSpreadsheet(), getSheetByName() and getLastRow() are each a call across to
+ * the Sheets service, not free property reads. A single request calls them dozens of
+ * times — opening one reel touches seven history sheets, and every helper re-fetched its
+ * own handle and row count. Now the per-execution cost of each is one call.
+ *
+ * With the cell counts already down, round trips are what's left of the latency: every
+ * one of these is a few tens of milliseconds, and they add up faster than the data does.
+ */
+function ss_() {
+  if (!_ssHandle) _ssHandle = SpreadsheetApp.getActiveSpreadsheet();
+  return _ssHandle;
+}
+
+function lastRow_(sheetName) {
+  if (_lastRowMemo[sheetName] === undefined) _lastRowMemo[sheetName] = getSheet_(sheetName).getLastRow();
+  return _lastRowMemo[sheetName];
+}
 
 function sheetToObjects_(sheetName) {
   if (_sheetMemo[sheetName]) return _sheetMemo[sheetName];
   var sheet = getSheet_(sheetName);
-  var lastRow = sheet.getLastRow();
+  var lastRow = lastRow_(sheetName);
   var headers = HEADERS[sheetName];
   if (lastRow < 2) { _sheetMemo[sheetName] = []; return []; }
   var values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
@@ -445,7 +479,7 @@ function sheetToObjects_(sheetName) {
 function scanColumns_(sheetName, colNames) {
   var sheet = getSheet_(sheetName);
   var headers = HEADERS[sheetName];
-  var lastRow = sheet.getLastRow();
+  var lastRow = lastRow_(sheetName);
   if (lastRow < 2) return [];
   var cols = colNames.map(function (n) { return headers.indexOf(n) + 1; });
   var data = cols.map(function (c) { return sheet.getRange(2, c, lastRow - 1, 1).getValues(); });
@@ -468,7 +502,7 @@ function rowsForPipe_(sheetName, pipeCode) {
 
   var sheet = getSheet_(sheetName);
   var headers = HEADERS[sheetName];
-  var lastRow = sheet.getLastRow();
+  var lastRow = lastRow_(sheetName);
   if (lastRow < 2) return [];
 
   var pipeCol = headers.indexOf('PipeCode') + 1;
@@ -511,14 +545,14 @@ function appendRow_(sheetName, obj) {
   var row = headers.map(function (h) { return (obj[h] === undefined || obj[h] === null) ? '' : obj[h]; });
   sheet.appendRow(row);
   _memoDrop_(sheetName);
-  return sheet.getLastRow();
+  return lastRow_(sheetName);
 }
 
 function updateRowByKey_(sheetName, keyField, keyValue, patch) {
   var sheet = getSheet_(sheetName);
   var headers = HEADERS[sheetName];
   var keyCol = headers.indexOf(keyField) + 1;
-  var lastRow = sheet.getLastRow();
+  var lastRow = lastRow_(sheetName);
   if (lastRow < 2) return false;
   var keys = sheet.getRange(2, keyCol, lastRow - 1, 1).getValues();
   for (var i = 0; i < keys.length; i++) {
@@ -541,10 +575,37 @@ function updateRowByKey_(sheetName, keyField, keyValue, patch) {
   return false;
 }
 
+// Looking up one row used to pull the entire sheet. WorkOrders is ~75 columns of recipe
+// data, so finding one work order to check a tolerance meant transferring every target,
+// temperature and die setting of every job ever entered. Scans the key column, then
+// fetches the single row it found.
 function findRowByKey_(sheetName, keyField, keyValue) {
-  var rows = sheetToObjects_(sheetName);
-  for (var i = 0; i < rows.length; i++) {
-    if (String(rows[i][keyField]) === String(keyValue)) return rows[i];
+  // Already loaded this sheet in full during this request? Then scanning it is free.
+  if (_sheetMemo[sheetName]) {
+    var rows = _sheetMemo[sheetName];
+    for (var i = 0; i < rows.length; i++) {
+      if (String(rows[i][keyField]) === String(keyValue)) return rows[i];
+    }
+    return null;
+  }
+
+  var sheet = getSheet_(sheetName);
+  var headers = HEADERS[sheetName];
+  var lastRow = lastRow_(sheetName);
+  if (lastRow < 2) return null;
+
+  var keyCol = headers.indexOf(keyField) + 1;
+  if (keyCol < 1) return null;
+  var keys = sheet.getRange(2, keyCol, lastRow - 1, 1).getValues();
+  for (var k = 0; k < keys.length; k++) {
+    if (String(keys[k][0]) === String(keyValue)) {
+      var rowNum = k + 2;
+      var values = sheet.getRange(rowNum, 1, 1, headers.length).getValues()[0];
+      var obj = {};
+      for (var c = 0; c < headers.length; c++) obj[headers[c]] = values[c];
+      obj._row = rowNum;
+      return obj;
+    }
   }
   return null;
 }
@@ -1221,13 +1282,22 @@ function apiAddReading_(body) {
     Footage: numOrBlank_(body.footage)
   };
   appendRow_(SHEETS.READINGS, row);
-  markSectionStarted_(pipeCode, section);
-  // Carry the reading onto the reel so the dashboard never has to scan Readings for it.
-  updateRowByKey_(SHEETS.PIPES, 'PipeCode', pipeCode, {
+
+  // One patch, not two. Marking the section started and carrying the reading onto the
+  // reel both write the same Pipes row, and each updateRowByKey_ is a read-modify-write
+  // round trip — doing them separately paid that twice on the single most frequent
+  // write in the app. `pipe` was already fetched above, so the status check is free.
+  var patch = {
     LastReadingAt: row.Timestamp, LastReadingType: row.Type,
     LastReadingValue: row.Value, LastReadingInTol: row.InTol,
     LastUpdated: nowIso_()
-  });
+  };
+  var prefix = sectionPrefix_(section);
+  if (pipe[prefix + '_Status'] === 'Not started') {
+    patch[prefix + '_Status'] = 'In progress';
+    patch[prefix + '_StartedAt'] = nowIso_();
+  }
+  updateRowByKey_(SHEETS.PIPES, 'PipeCode', pipeCode, patch);
   cacheClearPipe_(pipeCode);
   return row;
 }
@@ -1744,7 +1814,8 @@ function buildReportHtml_(data) {
 
   h += '<h3 style="border-bottom:1px solid #ccc;padding-bottom:3px">Braidline — ' + esc(pipe.BR_Status) + '</h3>';
   h += '<div style="color:#555;margin-bottom:6px">' +
-    (wo.BR_Material ? 'Material: ' + esc(wo.BR_Material) + ' &nbsp;·&nbsp; ' : '') +
+    (wo.BR_LongsMaterial ? 'Longs material: ' + esc(wo.BR_LongsMaterial) + ' &nbsp;·&nbsp; ' : '') +
+    (wo.BR_XbraidMaterial ? 'Cross braid material: ' + esc(wo.BR_XbraidMaterial) + ' &nbsp;·&nbsp; ' : '') +
     'Longs: ' + esc(wo.BR_Longs) +
     ' &nbsp;·&nbsp; Ends up: ' + esc(wo.BR_XbraidEndsUp) +
     ' &nbsp;·&nbsp; Target pitch ' + esc(wo.BR_TargetPitch) + ' ± ' + esc(wo.BR_PitchTol) +
