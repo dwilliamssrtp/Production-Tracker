@@ -425,6 +425,82 @@ function sheetToObjects_(sheetName) {
   return out;
 }
 
+/* Targeted reads.
+ *
+ * What a sheet read costs is roughly the number of cells it moves, and the history
+ * sheets are wide: ThicknessChecks is 26 columns, 16 of them the individual wall points.
+ * Pulling every column of every row to find the handful belonging to one reel means
+ * transferring the whole sheet to throw nearly all of it away.
+ *
+ * These two read narrowly instead: scan one key column to find out *which* rows matter,
+ * then fetch only those. For a reel with 40 thickness checks in a sheet of 5,000, that's
+ * one 5,000-cell scan plus a small block, rather than 130,000 cells.
+ */
+
+// Reads only the named columns, for every data row. One getValues per column.
+function scanColumns_(sheetName, colNames) {
+  var sheet = getSheet_(sheetName);
+  var headers = HEADERS[sheetName];
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  var cols = colNames.map(function (n) { return headers.indexOf(n) + 1; });
+  var data = cols.map(function (c) { return sheet.getRange(2, c, lastRow - 1, 1).getValues(); });
+  var out = [];
+  for (var i = 0; i < lastRow - 1; i++) {
+    var obj = { _row: i + 2 };
+    for (var k = 0; k < colNames.length; k++) obj[colNames[k]] = data[k][i][0];
+    out.push(obj);
+  }
+  return out;
+}
+
+// Every row of a history sheet belonging to one reel.
+function rowsForPipe_(sheetName, pipeCode) {
+  // If something already read this sheet in full during this request, reuse that rather
+  // than going back to the sheet — filtering in memory is free.
+  if (_sheetMemo[sheetName]) {
+    return _sheetMemo[sheetName].filter(function (r) { return String(r.PipeCode) === pipeCode; });
+  }
+
+  var sheet = getSheet_(sheetName);
+  var headers = HEADERS[sheetName];
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  var pipeCol = headers.indexOf('PipeCode') + 1;
+  var keys = sheet.getRange(2, pipeCol, lastRow - 1, 1).getValues();
+  var wanted = [];
+  for (var i = 0; i < keys.length; i++) {
+    if (String(keys[i][0]) === pipeCode) wanted.push(i + 2);
+  }
+  if (!wanted.length) return [];
+
+  // These sheets are append-ordered, so a reel's rows sit inside the window of its run —
+  // interleaved with whatever else was on the lines that week, but nowhere near the rest
+  // of plant history. Fetching that enclosing window is one round trip and skips
+  // everything older.
+  //
+  // That only holds while the window really is a window. A reel touched at both ends of
+  // a long history would make the "block" the entire sheet, and we'd have paid for the
+  // key scan on top. So when the span isn't actually narrow, fall back to the plain full
+  // read — on these wide sheets the key column we already read is a small fraction of
+  // the width, so the fallback costs little more than reading it straight out.
+  var first = wanted[0], last = wanted[wanted.length - 1];
+  var span = last - first + 1;
+  if (span > (lastRow - 1) * 0.5) {
+    return sheetToObjects_(sheetName).filter(function (r) { return String(r.PipeCode) === pipeCode; });
+  }
+  var block = sheet.getRange(first, 1, span, headers.length).getValues();
+
+  return wanted.map(function (rowNum) {
+    var v = block[rowNum - first];
+    var obj = {};
+    for (var c = 0; c < headers.length; c++) obj[headers[c]] = v[c];
+    obj._row = rowNum;
+    return obj;
+  });
+}
+
 function appendRow_(sheetName, obj) {
   var sheet = getSheet_(sheetName);
   var headers = HEADERS[sheetName];
@@ -1111,13 +1187,13 @@ function apiGetPipe_(pipeCode) {
   var wo = findRowByCode_(SHEETS.WORKORDERS, pipe.WorkOrderCode);
   if (!wo) throw new Error('Work order not found for pipe: ' + pipeCode);
 
-  var readings = sheetToObjects_(SHEETS.READINGS).filter(function (r) { return String(r.PipeCode) === pipeCode; });
-  var checks = sheetToObjects_(SHEETS.THICKNESS).filter(function (r) { return String(r.PipeCode) === pipeCode; });
-  var notes = sheetToObjects_(SHEETS.NOTES).filter(function (r) { return String(r.PipeCode) === pipeCode; });
-  var photos = sheetToObjects_(SHEETS.PHOTOS).filter(function (r) { return String(r.PipeCode) === pipeCode; });
-  var material = sheetToObjects_(SHEETS.MATERIAL).filter(function (r) { return String(r.PipeCode) === pipeCode; });
-  var problems = sheetToObjects_(SHEETS.PROBLEMS).filter(function (r) { return String(r.PipeCode) === pipeCode; });
-  var downtime = sheetToObjects_(SHEETS.DOWNTIME).filter(function (r) { return String(r.PipeCode) === pipeCode; });
+  var readings = rowsForPipe_(SHEETS.READINGS, pipeCode);
+  var checks = rowsForPipe_(SHEETS.THICKNESS, pipeCode);
+  var notes = rowsForPipe_(SHEETS.NOTES, pipeCode);
+  var photos = rowsForPipe_(SHEETS.PHOTOS, pipeCode);
+  var material = rowsForPipe_(SHEETS.MATERIAL, pipeCode);
+  var problems = rowsForPipe_(SHEETS.PROBLEMS, pipeCode);
+  var downtime = rowsForPipe_(SHEETS.DOWNTIME, pipeCode);
   var siblingPipes = allPipes.filter(function (p) { return String(p.WorkOrderCode) === String(pipe.WorkOrderCode); });
 
   return {
@@ -1421,7 +1497,9 @@ function apiSetSectionStatus_(body) {
 function apiDashboard_() {
   var pipes = sheetToObjects_(SHEETS.PIPES);
   var workOrders = sheetToObjects_(SHEETS.WORKORDERS);
-  var problems = sheetToObjects_(SHEETS.PROBLEMS);
+  // The board only needs an open-problem count per reel, so read those two columns
+  // rather than all 11 — descriptions and resolution notes are never shown here.
+  var problems = scanColumns_(SHEETS.PROBLEMS, ['PipeCode', 'Status']);
   var downtimeEvents = sheetToObjects_(SHEETS.DOWNTIME);
 
   // Reads the reel's own LastReading* columns rather than scanning the Readings sheet.
