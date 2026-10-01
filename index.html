@@ -342,7 +342,8 @@ var STATE = {
   tvPage: 0, tvPageTimer: null, tvDrillWO: null, tvDrillPipe: null, tvSection: null, tvPipeData: null,
   pdCode: null, pdSection: null, pdData: null,
   loginError: '', operatorKey: '', accounts: null, adminError: '',
-  rpPipe: null, rpData: null, rpIndex: null, rpLoadedAt: null
+  rpPipe: null, rpData: null, rpIndex: null, rpLoadedAt: null,
+  tagReturn: null
 };
 
 /* ============================= API ============================= */
@@ -1004,7 +1005,7 @@ function lookupCode(code){
         td.addEventListener('click', function(){ lookupCode(td.dataset.pipe); });
       });
       qsa('[data-reprint]', box).forEach(function(b){
-        b.addEventListener('click', function(){ openTagFor(b.dataset.reprint); });
+        b.addEventListener('click', function(){ openTagFor(b.dataset.reprint, {view: 'home', label: 'Back'}); });
       });
     }).catch(function(){
       box.innerHTML = '<p class="flag">No reel or work order found for "'+esc(code)+'".</p>' +
@@ -1216,7 +1217,8 @@ function bindAddPipe(){
     E('createPipeBtn').disabled = true;
     apiPost('createPipe', {pipeCode: pipeCode, workOrderCode: STATE.workOrderCode, createdBy: createdBy})
       .then(function(){ toast('Reel created'); return apiGet('getPipe', {pipeCode: pipeCode}); })
-      .then(function(data){ applyPipeData(data); STATE.pipeCode = pipeCode; go('tagPrinted', {pipeCode: pipeCode}); })
+      // Fresh reel, not a reprint detour — clear any return target left over from one.
+      .then(function(data){ applyPipeData(data); STATE.pipeCode = pipeCode; STATE.tagReturn = null; go('tagPrinted', {pipeCode: pipeCode}); })
       .catch(function(err){ toast(err.message, true); E('createPipeBtn').disabled = false; });
   });
 }
@@ -1254,10 +1256,14 @@ function viewTagPrinted(){
       'like a key and keep it on the reel. If you ever rotate the operator key in Admin, every tag ' +
       'printed before that stops working and has to be reprinted.</p>' +
     '<div class="row no-print" style="justify-content:center;margin-top:10px">' +
-      '<button class="btn" id="printBtn">Print tag</button>' +
-      '<button class="btn pri" id="startOpBtn">Start Baseline entry</button>' +
-      '<button class="btn" id="addAnotherBtn">Add another reel</button>' +
-      '<button class="btn" id="homeAfterBtn">Home</button>' +
+      '<button class="btn pri" id="printBtn">Print tag</button>' +
+      // Reached by reprinting an existing reel's tag, the create-a-reel follow-ons are
+      // noise — you came here for the QR and want to go back where you were.
+      (STATE.tagReturn
+        ? '<button class="btn" id="tagBackBtn">'+esc(STATE.tagReturn.label || 'Back')+'</button>'
+        : '<button class="btn" id="startOpBtn">Start Baseline entry</button>' +
+          '<button class="btn" id="addAnotherBtn">Add another reel</button>' +
+          '<button class="btn" id="homeAfterBtn">Home</button>') +
     '</div>' +
   '</section>';
 }
@@ -1279,18 +1285,32 @@ function bindTagPrinted(){
     '</div>';
   }).catch(function(err){
     if (err && err.sessionExpired) return;
-    E('tagQr').innerHTML = '<p class="flag">Could not build the tag: '+esc(err.message)+'</p>';
+    // The QR library throws bare strings, not Errors, so err.message can be undefined —
+    // don't report a blank reason on the one screen that has no other diagnosis.
+    E('tagQr').innerHTML = '<p class="flag">Could not build the tag: '+esc((err && err.message) || err || 'unknown error')+'</p>';
   });
 
   E('printBtn').addEventListener('click', function(){ window.print(); });
+
+  if (STATE.tagReturn){
+    E('tagBackBtn').addEventListener('click', function(){
+      var back = STATE.tagReturn;
+      STATE.tagReturn = null;
+      go(back.view, back.opts);
+    });
+    return;
+  }
   E('startOpBtn').addEventListener('click', function(){ go('operator', {pipeCode: pipe.PipeCode, section: 'Baseline'}); });
   E('addAnotherBtn').addEventListener('click', function(){ go('addPipe', {workOrderCode: pipe.WorkOrderCode}); });
   E('homeAfterBtn').addEventListener('click', function(){ go('home'); });
 }
 
 // Loads a reel and drops the controller on its tag page, for reprinting a lost or
-// damaged tag — or every tag, after rotating the operator key.
-function openTagFor(pipeCode){
+// damaged tag — or every tag, after rotating the operator key. `returnTo` is where the
+// Back button should go: reprinting is a detour, so you land back where you started
+// rather than being dumped on Home the way the create-a-reel flow ends.
+function openTagFor(pipeCode, returnTo){
+  STATE.tagReturn = returnTo || null;
   apiGet('getPipe', {pipeCode: pipeCode}).then(function(data){
     applyPipeData(data);
     STATE.pipeCode = pipeCode;
@@ -2308,6 +2328,7 @@ function renderPipeDetail(){
       '<span class="spacer"></span>' +
       (openProblems.length ? problemBadge(openProblems.length) : '') +
       '<button class="btn sm" id="pdOpenOpBtn">Open operator view</button>' +
+      '<button class="btn sm" id="pdTagBtn">Reel tag / QR</button>' +
       '<button class="btn sm" id="pdEmailBtn">Email report now</button>' +
       '<button class="btn sm" id="pdBackBtn">Back to work order</button>' +
     '</div>' +
@@ -2341,6 +2362,9 @@ function renderPipeDetail(){
   var mgBtn = E('pdManageProblemsBtn');
   if (mgBtn) mgBtn.addEventListener('click', function(){ go('operator', {pipeCode: pipe.PipeCode, section: 'Problems'}); });
   E('pdOpenOpBtn').addEventListener('click', function(){ go('operator', {pipeCode: pipe.PipeCode, section: sec}); });
+  E('pdTagBtn').addEventListener('click', function(){
+    openTagFor(pipe.PipeCode, {view: 'pipeDetail', opts: {pipeCode: pipe.PipeCode}, label: 'Back to reel'});
+  });
   E('pdEmailBtn').addEventListener('click', function(){
     E('pdEmailBtn').disabled = true;
     apiPost('sendReport', {pipeCode: pipe.PipeCode, trigger: 'manual'})
@@ -2796,6 +2820,7 @@ function renderReport(){
       (openProblems ? '<span class="pill" style="background:var(--crit)">'+openProblems+' open issue'+(openProblems===1?'':'s')+'</span>' : '') +
       '<button class="btn sm" id="rpBackBtn">All reports</button>' +
       '<button class="btn sm" id="rpOpenPipeBtn">Open reel</button>' +
+      '<button class="btn sm" id="rpTagBtn">Reel tag / QR</button>' +
       '<button class="btn sm" id="rpEmailBtn">Email report</button>' +
       '<button class="btn sm pri" id="rpPrintBtn">Print / PDF</button>' +
     '</div>' +
@@ -2829,6 +2854,9 @@ function renderReport(){
     applyPipeData(data);
     STATE.pipeCode = pipe.PipeCode; STATE.workOrderCode = pipe.WorkOrderCode;
     go('operator', {pipeCode: pipe.PipeCode, section: firstOpenSection(pipe)});
+  });
+  E('rpTagBtn').addEventListener('click', function(){
+    openTagFor(pipe.PipeCode, {view: 'reports', label: 'Back to report'});
   });
   E('rpEmailBtn').addEventListener('click', function(){
     var b = E('rpEmailBtn'); b.disabled = true;
