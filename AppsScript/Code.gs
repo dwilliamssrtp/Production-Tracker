@@ -80,7 +80,10 @@ var HEADERS = {
     // Archiving. Appended at the end per the append-only rule above. Archived is the
     // flag the dashboard filters on; the other two are just an audit trail of who put
     // it away and when. Archiving is reversible — permanent deletion is a separate act.
-    'Archived', 'ArchivedAt', 'ArchivedBy'
+    'Archived', 'ArchivedAt', 'ArchivedBy',
+
+    // Braid yarn for the reinforcement layer (appended per the append-only rule).
+    'BR_Material'
   ],
   Pipes: [
     'PipeCode', 'WorkOrderCode', 'CreatedAt', 'CreatedBy',
@@ -220,6 +223,7 @@ var WO_FIELD_MAP = {
   blLinerTZ1: 'BL_LinerTZ1', blLinerTZ2: 'BL_LinerTZ2', blLinerTZ3: 'BL_LinerTZ3', blLinerClamp: 'BL_LinerClamp', blLinerFlange: 'BL_LinerFlange',
   blLinerThickness: 'BL_LinerThickness',
 
+  brMaterial: 'BR_Material',
   brLongsEndsUp: 'BR_Longs', brXbraidEndsUp: 'BR_XbraidEndsUp',
   brTargetPitch: 'BR_TargetPitch', brPitchTol: 'BR_PitchTol', brTargetOD: 'BR_TargetOD', brODTol: 'BR_ODTol',
   brTargetLength: 'BR_TargetLength', brNotes: 'BR_Notes',
@@ -234,7 +238,7 @@ var WO_FIELD_MAP = {
 };
 // The subset of WO_FIELD_MAP keys that are free text rather than numeric.
 var WO_TEXT_KEYS = ['customer', 'productCode', 'pipeSize', 'emailTo', 'blNotes', 'brNotes', 'cvNotes',
-  'blBackerMaterial', 'blBondMaterial', 'blLinerMaterial'];
+  'blBackerMaterial', 'blBondMaterial', 'blLinerMaterial', 'brMaterial'];
 
 function valueForField_(body, key) {
   var v = body[key];
@@ -1739,7 +1743,9 @@ function buildReportHtml_(data) {
   h += '<b>Photos</b>' + photosList('Baseline');
 
   h += '<h3 style="border-bottom:1px solid #ccc;padding-bottom:3px">Braidline — ' + esc(pipe.BR_Status) + '</h3>';
-  h += '<div style="color:#555;margin-bottom:6px">Longs: ' + esc(wo.BR_Longs) +
+  h += '<div style="color:#555;margin-bottom:6px">' +
+    (wo.BR_Material ? 'Material: ' + esc(wo.BR_Material) + ' &nbsp;·&nbsp; ' : '') +
+    'Longs: ' + esc(wo.BR_Longs) +
     ' &nbsp;·&nbsp; Ends up: ' + esc(wo.BR_XbraidEndsUp) +
     ' &nbsp;·&nbsp; Target pitch ' + esc(wo.BR_TargetPitch) + ' ± ' + esc(wo.BR_PitchTol) +
     ' &nbsp;·&nbsp; Target OD ' + esc(wo.BR_TargetOD) + ' ± ' + esc(wo.BR_ODTol) +

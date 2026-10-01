@@ -1,6 +1,6 @@
 # SRTP Production Tracker — setup
 
-**Already deployed once and just need to push an update?** Skip to [Updating later](#updating-later). This round needs a `Code.gs` redeploy (speed work + archiving) plus re-hosting `index.html`, and a **re-run of `setup()`** — it adds the new `WorkOrders` and `Pipes` columns and backfills each reel's last reading. Append-only, no fresh Sheet needed and no data migration.
+**Already deployed once and just need to push an update?** Skip to [Updating later](#updating-later). This round needs a `Code.gs` redeploy plus re-hosting `index.html`, and a **re-run of `setup()`** to add the new columns. Append-only, no fresh Sheet needed and no data migration.
 
 Two pieces:
 - **Backend**: a Google Sheet + Apps Script (`AppsScript/Code.gs`) — this is the database, the JSON API, photo storage (Google Drive), the email sender, and the login/permission check.
@@ -42,6 +42,8 @@ Note on the deployment setting: "Who has access: **Anyone**" only means Google w
 - The **dashboard and TV view are grouped by work order**, showing every active pipe underneath — so you can see pipe R1 on Braidline while R2 is still on Baseline, side by side, plus a progress bar toward the work order's total project length (summed from each pipe's finished/Coverline length).
 
 ## What's new this round
+
+- **Braidline setup takes a material.** The braid yarn now has its own field on the work order form, next to Longs and Ends up, and shows on the Braidline reference tile and in the emailed report &mdash; matching how Baseline already records a material per extruder. Existing work orders have it blank until you edit them and fill it in.
 
 - **Speed: the backend does far less work per request.** Four things were compounding. (1) Adding logins meant every single request re-read the whole `Sessions` *and* `Accounts` sheets just to check who you were — including every 20-second dashboard poll and every reading saved from the floor. Sessions are now cached, so authorising a request costs nothing. (2) The dashboard scanned the entire `Readings` sheet — every row, every work order, all of plant history — purely to find each reel's most recent reading; each reel now carries its own last reading, so that cost no longer grows as the Sheet fills up. (3) The 15-second server cache was shorter than the 20-second poll, so a single browser missed it every time; it's now 45s, and your own changes still clear it immediately. (4) Saving a work order wrote ~60 cells one at a time; it's now one write. Measured on a test Sheet with 1,200 readings, a dashboard refresh went from reading 1,212 rows to 12, and a repeat refresh now reads nothing at all.
 - **Fewer dropped connections.** The header status used to fire its own request every 30 seconds just to print a word, and it called you offline after a *single* failure — so one transient Apps Script hiccup flashed "Offline / unreachable" at people whose connection was fine. Now every real request reports its own result, a ping only goes out when the screen has genuinely been idle, and it takes two consecutive failures to declare an outage. A plain refusal from the server ("Reel not found") no longer counts as being offline, because it proves the opposite.
