@@ -599,6 +599,36 @@ function go(view, opts){
     toast('That area is for the controller only', true);
     view = 'home';
   }
+
+  /* The operator view renders straight out of STATE (pipe, workOrder, readings, …), so
+   * it only works if something loaded that reel into STATE first. Several places
+   * navigate to it without having done so — the dashboard's reel detail page keeps its
+   * own copy in pdData, the Timers page has nothing but a reel code — and rendering with
+   * empty STATE threw before it drew anything, leaving a blank screen.
+   *
+   * Guarding here instead of at each call site means every route in, including any added
+   * later, gets the data it needs. */
+  if (view === 'operator'){
+    var want = (opts && opts.pipeCode) || STATE.pipeCode;
+    if (want && (!STATE.pipe || String(STATE.pipe.PipeCode) !== String(want))){
+      // The detail and report views already hold this reel's full payload — reuse it
+      // rather than spending another round trip on data we have in hand.
+      var held = (STATE.pdData && STATE.pdData.pipe && String(STATE.pdData.pipe.PipeCode) === String(want)) ? STATE.pdData
+               : (STATE.rpData && STATE.rpData.pipe && String(STATE.rpData.pipe.PipeCode) === String(want)) ? STATE.rpData
+               : null;
+      if (held){
+        applyPipeData(held);
+        STATE.pipeCode = want;
+        STATE.workOrderCode = held.pipe.WorkOrderCode;
+      } else {
+        stopPolling();
+        STATE.view = 'operator';
+        E('app').innerHTML = '<p class="muted" style="text-align:center;margin-top:6vh">Loading reel&hellip;</p>';
+        openReelForOperator(want, opts && opts.section);
+        return;
+      }
+    }
+  }
   STATE.view = view;
   if (opts && opts.pipeCode !== undefined) STATE.pipeCode = opts.pipeCode;
   if (opts && opts.workOrderCode !== undefined) STATE.workOrderCode = opts.workOrderCode;
@@ -754,14 +784,15 @@ function scrubKeyFromUrl(){
   } catch (e) { /* older browser — the key stays in the bar, nothing else breaks */ }
 }
 
-// The operator's one-and-only destination: the reel itself, on its first unfinished section.
-function openReelForOperator(pipeCode){
+// Loads a reel into STATE and opens it. Defaults to the first unfinished section, but
+// honours a requested one — "Manage / resolve" wants the Problems tab, not Baseline.
+function openReelForOperator(pipeCode, section){
   return apiGet('getPipe', {pipeCode: pipeCode})
     .then(function(data){
       applyPipeData(data);
       STATE.pipeCode = pipeCode;
       STATE.workOrderCode = data.pipe.WorkOrderCode;
-      go('operator', {pipeCode: pipeCode, section: firstOpenSection(data.pipe)});
+      go('operator', {pipeCode: pipeCode, section: section || firstOpenSection(data.pipe)});
     })
     .catch(function(err){
       if (err && err.sessionExpired) return;
