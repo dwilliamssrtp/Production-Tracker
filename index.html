@@ -132,6 +132,10 @@
   .photolist{display:flex;flex-wrap:wrap;gap:8px;}
   .photoitem{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:9px;color:var(--mut);width:70px;text-align:center;}
 
+  /* Exists only to be printed — it sits outside #app so render() can't clear it, and
+     without this it stayed on screen under every page you navigated to afterwards. */
+  #printTag{display:none;}
+
   #scanOverlay{position:fixed;inset:0;background:#000;display:none;z-index:50;flex-direction:column;}
   #scanOverlay video{flex:1;width:100%;object-fit:cover;}
   #scanOverlay .sctl{padding:10px;display:flex;justify-content:center;gap:10px;background:#000;}
@@ -236,7 +240,7 @@
     header,nav,.no-print,.tabs{display:none !important;}
     body *{visibility:hidden;}
     #printTag,#printTag *{visibility:visible;}
-    #printTag{position:absolute;top:0;left:0;}
+    #printTag{display:block;position:absolute;top:0;left:0;}
 
     /* Printing a report flips which subtree is visible — the rules above are built
        around the reel tag being the only thing that ever prints. */
@@ -571,6 +575,10 @@ function renderNav(){
 
 function render(){
   renderNav();
+  // The print block is outside #app, so it outlives a navigation. Left populated, a
+  // Ctrl+P anywhere else would print whichever reel's tag was last opened; bindTagPrinted
+  // refills it for the view that actually wants it.
+  if (STATE.view !== 'tagPrinted') E('printTag').innerHTML = '';
   var app = E('app');
   if (STATE.view === 'login') app.innerHTML = viewLogin();
   else if (STATE.view === 'admin') app.innerHTML = viewAdmin();
