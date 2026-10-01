@@ -75,7 +75,12 @@ var HEADERS = {
     // BL_BackerSize/BL_BondSize/BL_LinerSize: unused. These extruders are physically fixed
     // at 3.5"/1.25"/2" on the machine — not a per-work-order value — so the size is hardcoded
     // in index.html's heading text instead of stored here. Column kept per append-only rule.
-    'BL_BackerSize', 'BL_BondSize', 'BL_LinerSize'
+    'BL_BackerSize', 'BL_BondSize', 'BL_LinerSize',
+
+    // Archiving. Appended at the end per the append-only rule above. Archived is the
+    // flag the dashboard filters on; the other two are just an audit trail of who put
+    // it away and when. Archiving is reversible — permanent deletion is a separate act.
+    'Archived', 'ArchivedAt', 'ArchivedBy'
   ],
   Pipes: [
     'PipeCode', 'WorkOrderCode', 'CreatedAt', 'CreatedBy',
@@ -142,6 +147,13 @@ var ACTION_ROLES = {
   dashboard: ['Admin'],
   getOperatorKey: ['Admin'],
   listAccounts: ['Admin'],
+  listArchive: ['Admin'],
+  workOrderDeletePreview: ['Admin'],
+
+  // Archiving is reversible; deleting is not. Both are the controller's call alone.
+  archiveWorkOrder: ['Admin'],
+  unarchiveWorkOrder: ['Admin'],
+  deleteWorkOrder: ['Admin'],
 
   // Work order / reel structure — controller only
   createWorkOrder: ['Admin'],
@@ -385,6 +397,16 @@ function findRowByKey_(sheetName, keyField, keyValue) {
     if (String(rows[i][keyField]) === String(keyValue)) return rows[i];
   }
   return null;
+}
+
+// Deletes every row the predicate matches. Bottom-up, so deleting one row doesn't
+// shift the row numbers of the ones still queued behind it.
+function deleteRowsWhere_(sheetName, predicate) {
+  var sheet = getSheet_(sheetName);
+  var doomed = sheetToObjects_(sheetName).filter(predicate);
+  doomed.sort(function (a, b) { return b._row - a._row; })
+    .forEach(function (r) { sheet.deleteRow(r._row); });
+  return doomed.length;
 }
 
 function findRowByCode_(sheetName, code) { return findRowByKey_(sheetName, 'Code', code); }
@@ -691,6 +713,8 @@ function doGet(e) {
         break;
       case 'getOperatorKey': result = apiGetOperatorKey_(); break;
       case 'listAccounts': result = apiListAccounts_(); break;
+      case 'listArchive': result = apiListArchive_(); break;
+      case 'workOrderDeletePreview': result = apiWorkOrderDeletePreview_(e.parameter.code); break;
       default: throw new Error('Unknown GET action: ' + action);
     }
     return jsonOut_({ ok: true, data: result });
@@ -741,6 +765,10 @@ function doPost(e) {
         case 'setAccountActive': result = apiSetAccountActive_(acc, body); break;
         case 'deleteAccount': result = apiDeleteAccount_(acc, body); break;
         case 'rotateOperatorKey': result = apiRotateOperatorKey_(); break;
+
+        case 'archiveWorkOrder': result = apiArchiveWorkOrder_(body, acc); break;
+        case 'unarchiveWorkOrder': result = apiUnarchiveWorkOrder_(body); break;
+        case 'deleteWorkOrder': result = apiDeleteWorkOrder_(body); break;
 
         default: throw new Error('Unknown POST action: ' + action);
       }
@@ -799,6 +827,126 @@ function apiGetWorkOrderInfo_(code) {
   if (!wo) throw new Error('Work order not found: ' + code);
   var pipes = sheetToObjects_(SHEETS.PIPES).filter(function (p) { return String(p.WorkOrderCode) === code; });
   return { workOrder: wo, pipes: pipes };
+}
+
+// ---------- archive / delete ----------
+
+/* Two stages, deliberately: archiving clears a finished job off the dashboard and is
+ * fully reversible, and only from the archive can anything actually be destroyed.
+ * Nothing in the app deletes production history in one step.
+ *
+ * A work order's child data is keyed by PipeCode, not by work order, so a permanent
+ * delete has to walk the pipes first and clear every history sheet by their codes —
+ * otherwise the rows survive as orphans that no longer belong to anything. */
+
+function isArchived_(wo) { return wo.Archived === true || String(wo.Archived).toUpperCase() === 'TRUE'; }
+
+function apiArchiveWorkOrder_(body, acc) {
+  var code = String(body.code || '').trim();
+  var wo = findRowByCode_(SHEETS.WORKORDERS, code);
+  if (!wo) throw new Error('Work order not found: ' + code);
+  updateRowByCode_(SHEETS.WORKORDERS, code, {
+    Archived: true, ArchivedAt: nowIso_(), ArchivedBy: (acc && acc.Username) || ''
+  });
+  cacheClearDash_();
+  return { code: code, archived: true };
+}
+
+function apiUnarchiveWorkOrder_(body) {
+  var code = String(body.code || '').trim();
+  var wo = findRowByCode_(SHEETS.WORKORDERS, code);
+  if (!wo) throw new Error('Work order not found: ' + code);
+  updateRowByCode_(SHEETS.WORKORDERS, code, { Archived: false, ArchivedAt: '', ArchivedBy: '' });
+  cacheClearDash_();
+  return { code: code, archived: false };
+}
+
+function apiListArchive_() {
+  var archived = sheetToObjects_(SHEETS.WORKORDERS).filter(isArchived_);
+  var pipes = sheetToObjects_(SHEETS.PIPES);
+  return {
+    workOrders: archived.map(function (wo) {
+      var mine = pipes.filter(function (p) { return String(p.WorkOrderCode) === String(wo.Code); });
+      return {
+        code: wo.Code, customer: wo.Customer || '', productCode: wo.ProductCode || '',
+        pipeSize: wo.PipeSize || '', projectLength: wo.ProjectLength,
+        createdAt: wo.CreatedAt, archivedAt: wo.ArchivedAt, archivedBy: wo.ArchivedBy,
+        pipeCount: mine.length,
+        pipeCodes: mine.map(function (p) { return p.PipeCode; }),
+        completePipes: mine.filter(function (p) { return p.OverallStatus === 'Complete'; }).length
+      };
+    }).sort(function (a, b) { return new Date(b.archivedAt) - new Date(a.archivedAt); })
+  };
+}
+
+// What a permanent delete would destroy. The front end shows this before asking the
+// controller to confirm, so nobody is agreeing to a number they haven't seen.
+function apiWorkOrderDeletePreview_(code) {
+  code = String(code || '').trim();
+  var wo = findRowByCode_(SHEETS.WORKORDERS, code);
+  if (!wo) throw new Error('Work order not found: ' + code);
+  var pipeCodes = sheetToObjects_(SHEETS.PIPES)
+    .filter(function (p) { return String(p.WorkOrderCode) === code; })
+    .map(function (p) { return String(p.PipeCode); });
+  var inSet = function (r) { return pipeCodes.indexOf(String(r.PipeCode)) >= 0; };
+  return {
+    code: code, archived: isArchived_(wo), pipeCodes: pipeCodes,
+    counts: {
+      pipes: pipeCodes.length,
+      readings: sheetToObjects_(SHEETS.READINGS).filter(inSet).length,
+      thicknessChecks: sheetToObjects_(SHEETS.THICKNESS).filter(inSet).length,
+      notes: sheetToObjects_(SHEETS.NOTES).filter(inSet).length,
+      photos: sheetToObjects_(SHEETS.PHOTOS).filter(inSet).length,
+      materialUsage: sheetToObjects_(SHEETS.MATERIAL).filter(inSet).length,
+      problemReports: sheetToObjects_(SHEETS.PROBLEMS).filter(inSet).length,
+      downtimeEvents: sheetToObjects_(SHEETS.DOWNTIME).filter(inSet).length
+    }
+  };
+}
+
+function apiDeleteWorkOrder_(body) {
+  var code = String(body.code || '').trim();
+  var wo = findRowByCode_(SHEETS.WORKORDERS, code);
+  if (!wo) throw new Error('Work order not found: ' + code);
+
+  // Archive first, delete second — this refuses to skip the reversible stage even if
+  // something calls it directly rather than through the UI.
+  if (!isArchived_(wo)) throw new Error('Archive this work order before deleting it');
+  // The caller must retype the code. Guards against a mis-click destroying the wrong job.
+  if (String(body.confirmCode || '').trim() !== code) throw new Error('Type the work order code exactly to confirm');
+
+  var pipeCodes = sheetToObjects_(SHEETS.PIPES)
+    .filter(function (p) { return String(p.WorkOrderCode) === code; })
+    .map(function (p) { return String(p.PipeCode); });
+  var inSet = function (r) { return pipeCodes.indexOf(String(r.PipeCode)) >= 0; };
+
+  // Drive files go to the trash rather than being erased: Drive keeps them ~30 days,
+  // which is the one safety net left after this point. A Drive failure must not abort
+  // the delete and leave the sheets half-cleared, so each is tried independently.
+  var photos = sheetToObjects_(SHEETS.PHOTOS).filter(inSet);
+  var trashed = 0, trashFailed = 0;
+  photos.forEach(function (p) {
+    if (!p.DriveFileId) return;
+    try { DriveApp.getFileById(p.DriveFileId).setTrashed(true); trashed++; }
+    catch (e) { trashFailed++; }
+  });
+
+  var deleted = {
+    readings: deleteRowsWhere_(SHEETS.READINGS, inSet),
+    thicknessChecks: deleteRowsWhere_(SHEETS.THICKNESS, inSet),
+    notes: deleteRowsWhere_(SHEETS.NOTES, inSet),
+    photos: deleteRowsWhere_(SHEETS.PHOTOS, inSet),
+    materialUsage: deleteRowsWhere_(SHEETS.MATERIAL, inSet),
+    problemReports: deleteRowsWhere_(SHEETS.PROBLEMS, inSet),
+    downtimeEvents: deleteRowsWhere_(SHEETS.DOWNTIME, inSet),
+    emailLog: deleteRowsWhere_(SHEETS.EMAILLOG, inSet),
+    pipes: deleteRowsWhere_(SHEETS.PIPES, function (p) { return String(p.WorkOrderCode) === code; }),
+    workOrders: deleteRowsWhere_(SHEETS.WORKORDERS, function (w) { return String(w.Code) === code; })
+  };
+
+  pipeCodes.forEach(cacheClearPipe_);
+  cacheClearDash_();
+  return { code: code, deleted: deleted, photosTrashed: trashed, photosNotTrashed: trashFailed };
 }
 
 // ---------- pipe API ----------
@@ -1157,6 +1305,9 @@ function apiDashboard_() {
   pipes.forEach(function (p) {
     var key = p.WorkOrderCode;
     var wo = woByCode[key] || {};
+    // Archived work orders are off the board entirely — that's the point of archiving.
+    // They stay reachable through the Archive view until someone deletes them.
+    if (isArchived_(wo)) return;
     if (!groups[key]) {
       groups[key] = {
         workOrderCode: key, customer: wo.Customer || '', productCode: wo.ProductCode || '',

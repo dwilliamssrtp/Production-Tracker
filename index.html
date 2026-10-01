@@ -347,7 +347,7 @@ var STATE = {
   pdCode: null, pdSection: null, pdData: null,
   loginError: '', operatorKey: '', accounts: null, adminError: '',
   rpPipe: null, rpData: null, rpIndex: null, rpLoadedAt: null,
-  tagReturn: null
+  tagReturn: null, archive: null
 };
 
 /* ============================= API ============================= */
@@ -536,7 +536,7 @@ function reloadPipe(pipeCode){
 // (ACTION_ROLES in Code.gs), so this is about never showing an operator a dead end —
 // including if one hand-edits the URL or a stale button survives a role change.
 var ADMIN_VIEWS = ['controller', 'controllerNew', 'addPipe', 'tagPrinted',
-                   'dashboard', 'woDashboard', 'pipeDetail', 'timers', 'tv', 'reports', 'admin'];
+                   'dashboard', 'woDashboard', 'pipeDetail', 'timers', 'tv', 'reports', 'archive', 'admin'];
 
 function go(view, opts){
   leaveTVIfActive();
@@ -557,7 +557,10 @@ function go(view, opts){
 function renderNav(){
   var nav = E('mainNav');
   if (!isSignedIn()){ nav.innerHTML = ''; return; }
-  var dashLike = STATE.view === 'dashboard' || STATE.view === 'woDashboard' || STATE.view === 'pipeDetail';
+  // Archive is reached from the dashboard and has no nav button of its own, so it
+  // keeps Dashboard lit rather than leaving nothing highlighted.
+  var dashLike = STATE.view === 'dashboard' || STATE.view === 'woDashboard' ||
+                 STATE.view === 'pipeDetail' || STATE.view === 'archive';
   var navActive = STATE.view === 'timers' ? 'timers' :
                   STATE.view === 'admin' ? 'admin' :
                   STATE.view === 'reports' ? 'reports' :
@@ -583,6 +586,7 @@ function render(){
   if (STATE.view === 'login') app.innerHTML = viewLogin();
   else if (STATE.view === 'admin') app.innerHTML = viewAdmin();
   else if (STATE.view === 'reports') app.innerHTML = viewReports();
+  else if (STATE.view === 'archive') app.innerHTML = viewArchive();
   else if (STATE.view === 'home') app.innerHTML = viewHome();
   else if (STATE.view === 'controller') app.innerHTML = viewController(false);
   else if (STATE.view === 'controllerNew') app.innerHTML = viewController(true);
@@ -2136,8 +2140,21 @@ function workOrderGroupHtml(g){
     '<span class="muted">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</span></div>' +
     lengthProgressHtml(g) +
     '<table style="margin-top:6px"><thead><tr><th class="l">Reel</th><th>Baseline</th><th>Braidline</th><th>Coverline</th><th class="l">Last reading</th></tr></thead><tbody>' + pipeRows + '</tbody></table>' +
-    '<div class="row" style="margin-top:8px"><button class="btn sm" data-addpipe="'+esc(g.workOrderCode)+'">+ Add reel to this work order</button></div>' +
+    '<div class="row" style="margin-top:8px"><button class="btn sm" data-addpipe="'+esc(g.workOrderCode)+'">+ Add reel to this work order</button>' +
+      '<span class="spacer"></span>' +
+      '<button class="btn sm" data-archivewo="'+esc(g.workOrderCode)+'" data-active="'+g.activePipes.length+'">Archive</button></div>' +
   '</section>';
+}
+
+// Archiving is reversible, so it doesn't need a heavy confirmation — but a job with
+// reels still running is almost certainly a mis-click, so that case gets asked about.
+function archiveWorkOrder(code, activePipes, onDone){
+  if (activePipes > 0 && !confirm(
+      code + ' still has ' + activePipes + ' reel' + (activePipes===1?'':'s') + ' not finished.\n\n' +
+      'Archiving takes it off the dashboard and the Timers page. Nothing is deleted and you can restore it from the Archive at any time.\n\nArchive it anyway?')) return;
+  apiPost('archiveWorkOrder', {code: code})
+    .then(function(){ toast(code + ' archived'); if (onDone) onDone(); })
+    .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
 }
 
 function renderDashboard(d){
@@ -2149,6 +2166,7 @@ function renderDashboard(d){
     '<div class="row no-print" style="margin-bottom:10px">' +
       '<h1 style="font-size:13px">Active work orders ('+d.active.length+')</h1>' +
       '<span class="spacer"></span>' +
+      '<button class="btn" data-nav="archive">View archive</button>' +
       '<button class="btn pri" data-nav="tv">Open TV view</button>' +
     '</div>' +
     (d.active.length ? groupsHtml : '<section class="card"><p class="muted">No active work orders.</p></section>') +
@@ -2164,6 +2182,12 @@ function renderDashboard(d){
   });
   qsa('[data-addpipe]', root).forEach(function(b){
     b.addEventListener('click', function(){ go('addPipe', {workOrderCode: b.dataset.addpipe}); });
+  });
+  qsa('[data-archivewo]', root).forEach(function(b){
+    b.addEventListener('click', function(ev){
+      ev.stopPropagation();
+      archiveWorkOrder(b.dataset.archivewo, Number(b.dataset.active||0), loadDashboard);
+    });
   });
   qsa('[data-wodash]', root).forEach(function(h){
     h.addEventListener('click', function(){ go('woDashboard', {workOrderCode: h.dataset.wodash}); });
@@ -2522,6 +2546,7 @@ function renderWoDashboard(g, serverTime){
       '<span class="spacer"></span>' +
       '<button class="btn sm" id="wodAddPipeBtn">+ Add reel</button>' +
       '<button class="btn sm" id="wodEditBtn">Edit targets</button>' +
+      '<button class="btn sm" id="wodArchiveBtn">Archive</button>' +
       '<button class="btn sm" id="wodBackBtn">Back to dashboard</button>' +
     '</div>' +
     '<section class="card">' +
@@ -2538,6 +2563,10 @@ function renderWoDashboard(g, serverTime){
 
   E('wodBackBtn').addEventListener('click', function(){ go('dashboard'); });
   E('wodAddPipeBtn').addEventListener('click', function(){ go('addPipe', {workOrderCode: g.workOrderCode}); });
+  E('wodArchiveBtn').addEventListener('click', function(){
+    // Archiving from here removes what you're looking at, so go somewhere that still exists.
+    archiveWorkOrder(g.workOrderCode, (g.activePipes || []).length, function(){ go('dashboard'); });
+  });
   E('wodEditBtn').addEventListener('click', function(){
     E('wodEditBtn').disabled = true;
     apiGet('getWorkOrderInfo', {code: g.workOrderCode}).then(function(info){
@@ -2548,6 +2577,134 @@ function renderWoDashboard(g, serverTime){
   qsa('.pipecard', root).forEach(function(c){
     c.addEventListener('click', function(){ go('pipeDetail', {pipeCode: c.dataset.pipe}); });
   });
+}
+
+/* ============================= ARCHIVE (admin only) =============================
+ * Where archived work orders live, and the only place anything can be destroyed.
+ *
+ * Deleting is staged on purpose: a job has to be archived first (the server enforces
+ * that, not just this screen), then the controller is shown exactly what would be
+ * destroyed — reel count, readings, thickness checks, photos, the lot — and has to
+ * retype the work order code. It is the one irreversible action in the app.
+ */
+function viewArchive(){ return '<div id="arRoot"><p class="muted">Loading&hellip;</p></div>'; }
+
+function bindArchive(){ loadArchive(); }
+
+function loadArchive(){
+  apiGet('listArchive').then(function(d){ STATE.archive = d.workOrders; renderArchive(); })
+    .catch(function(err){
+      if (err && err.sessionExpired) return;
+      var r = E('arRoot'); if (r) r.innerHTML = '<p class="flag">'+esc(err.message)+'</p>';
+    });
+}
+
+function renderArchive(){
+  var root = E('arRoot');
+  if (!root) return;
+  var list = STATE.archive || [];
+
+  var cards = list.map(function(w){
+    return '<section class="card">' +
+      '<div class="row"><b style="font-size:15px">'+esc(w.code)+'</b>' +
+        '<span class="pill inprogress">'+w.pipeCount+' reel'+(w.pipeCount===1?'':'s')+'</span>' +
+        '<span class="muted">'+esc(w.customer||'')+(w.productCode?' &middot; '+esc(w.productCode):'')+
+          (w.pipeSize?' &middot; '+esc(w.pipeSize):'')+'</span>' +
+        '<span class="spacer"></span>' +
+        '<button class="btn sm" data-unarchive="'+esc(w.code)+'">Restore</button>' +
+        '<button class="btn sm danger" data-delwo="'+esc(w.code)+'">Delete permanently</button>' +
+      '</div>' +
+      '<div class="muted" style="font-size:10.5px;margin-top:4px">' +
+        'Archived '+esc(fmtTime(w.archivedAt))+(w.archivedBy?' by '+esc(w.archivedBy):'')+
+        ' &middot; '+w.completePipes+' of '+w.pipeCount+' reels complete' +
+        (w.pipeCodes.length ? ' &middot; '+esc(w.pipeCodes.join(', ')) : '') +
+      '</div>' +
+      '<div id="delbox-'+esc(w.code)+'"></div>' +
+    '</section>';
+  }).join('');
+
+  root.innerHTML =
+    '<div class="row" style="margin-bottom:10px">' +
+      '<h1 style="font-size:13px">Archive ('+list.length+')</h1>' +
+      '<span class="spacer"></span>' +
+      '<button class="btn" data-nav="dashboard">Back to dashboard</button>' +
+    '</div>' +
+    '<p class="muted" style="margin-top:0">Archived work orders are off the dashboard, the Timers page and the TV view, but nothing has been deleted &mdash; <b>Restore</b> puts one back exactly as it was. Deleting is permanent and is the only thing in this app that destroys production history.</p>' +
+    (list.length ? cards : '<section class="card"><p class="muted">Nothing archived.</p></section>');
+
+  qsa('[data-unarchive]', root).forEach(function(b){
+    b.addEventListener('click', function(){
+      apiPost('unarchiveWorkOrder', {code: b.dataset.unarchive})
+        .then(function(){ toast(b.dataset.unarchive + ' restored'); loadArchive(); })
+        .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
+    });
+  });
+  qsa('[data-delwo]', root).forEach(function(b){
+    b.addEventListener('click', function(){ showDeletePreview(b.dataset.delwo); });
+  });
+}
+
+// Fetches and shows what would actually be destroyed, then asks for the code to be
+// retyped. Nobody should be confirming a number they haven't been shown.
+function showDeletePreview(code){
+  var box = E('delbox-' + code);
+  if (!box) return;
+  box.innerHTML = '<p class="muted">Checking what this would delete&hellip;</p>';
+  apiGet('workOrderDeletePreview', {code: code}).then(function(p){
+    var c = p.counts;
+    var lines = [
+      ['Reels', c.pipes], ['OD / pitch readings', c.readings], ['Thickness checks', c.thicknessChecks],
+      ['Notes', c.notes], ['Photos', c.photos], ['Material usage rows', c.materialUsage],
+      ['Problem reports', c.problemReports], ['Downtime events', c.downtimeEvents]
+    ].filter(function(l){ return l[1] > 0; });
+
+    box.innerHTML =
+      '<div class="card" style="border-color:var(--crit);margin-top:10px">' +
+        '<h3 style="color:var(--crit);margin-top:0">Delete '+esc(code)+' permanently</h3>' +
+        '<p style="margin:0 0 6px">This erases the work order and everything logged against it. It cannot be undone.</p>' +
+        (lines.length
+          ? '<table style="margin:6px 0"><tbody>' + lines.map(function(l){
+              return '<tr><td class="l">'+l[0]+'</td><td class="num"><b>'+l[1]+'</b></td></tr>';
+            }).join('') + '</tbody></table>'
+          : '<p class="muted">No production data was ever logged against this work order.</p>') +
+        (c.photos > 0 ? '<p class="muted" style="font-size:10.5px">The '+c.photos+' photo'+(c.photos===1?'':'s')+' will be moved to your Google Drive trash, where Drive keeps them for about 30 days.</p>' : '') +
+        '<div class="row" style="margin-top:8px">' +
+          '<div class="fld" style="flex:1;max-width:260px"><label>Type <b>'+esc(code)+'</b> to confirm</label>' +
+            '<input id="delconfirm-'+esc(code)+'" autocapitalize="none" autocomplete="off"></div>' +
+          '<button class="btn sm" data-delcancel="'+esc(code)+'" style="align-self:flex-end">Cancel</button>' +
+          '<button class="btn sm danger" data-delconfirm="'+esc(code)+'" style="align-self:flex-end">Delete permanently</button>' +
+        '</div>' +
+      '</div>';
+
+    var input = E('delconfirm-' + code);
+    input.focus();
+    box.querySelector('[data-delcancel]').addEventListener('click', function(){ box.innerHTML = ''; });
+    box.querySelector('[data-delconfirm]').addEventListener('click', function(){
+      doDeleteWorkOrder(code, input.value.trim(), this);
+    });
+    input.addEventListener('keydown', function(ev){
+      if (ev.key === 'Enter') doDeleteWorkOrder(code, input.value.trim(), null);
+    });
+  }).catch(function(err){
+    if (err && err.sessionExpired) return;
+    box.innerHTML = '<p class="flag">'+esc(err.message)+'</p>';
+  });
+}
+
+function doDeleteWorkOrder(code, confirmCode, btn){
+  if (confirmCode !== code){ toast('Type the work order code exactly to confirm', true); return; }
+  if (btn) btn.disabled = true;
+  apiPost('deleteWorkOrder', {code: code, confirmCode: confirmCode})
+    .then(function(res){
+      var n = res.deleted || {};
+      toast(code + ' deleted — ' + (n.pipes||0) + ' reel(s) and all their data removed');
+      if (res.photosNotTrashed) toast(res.photosNotTrashed + ' photo file(s) could not be trashed in Drive', true);
+      loadArchive();
+    })
+    .catch(function(err){
+      if (btn) btn.disabled = false;
+      if (!err.sessionExpired) toast(err.message, true);
+    });
 }
 
 /* ============================= REPORTS (admin only) =============================
@@ -3163,6 +3320,7 @@ function bindView(){
   if (STATE.view === 'login') bindLogin();
   else if (STATE.view === 'admin') bindAdmin();
   else if (STATE.view === 'reports') bindReports();
+  else if (STATE.view === 'archive') bindArchive();
   else if (STATE.view === 'home') bindHome();
   else if (STATE.view === 'controller') bindController(false);
   else if (STATE.view === 'controllerNew') bindController(true);
