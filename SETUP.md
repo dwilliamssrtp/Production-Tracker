@@ -1,6 +1,6 @@
 # SRTP Production Tracker — setup
 
-**Already deployed once and just need to push an update?** Skip to [Updating later](#updating-later). This round needs a `Code.gs` redeploy plus re-hosting `index.html`, and a **re-run of `setup()`** to add the new columns. Append-only, no fresh Sheet needed and no data migration.
+**Already deployed once and just need to push an update?** Skip to [Updating later](#updating-later). This round needs a `Code.gs` redeploy plus re-hosting `index.html`, and a **re-run of `setup()`** to add the new columns and backfill each reel's per-section footage. Append-only, no fresh Sheet needed and no data migration.
 
 Two pieces:
 - **Backend**: a Google Sheet + Apps Script (`AppsScript/Code.gs`) — this is the database, the JSON API, photo storage (Google Drive), the email sender, and the login/permission check.
@@ -42,6 +42,9 @@ Note on the deployment setting: "Who has access: **Anyone**" only means Google w
 - The **dashboard and TV view are grouped by work order**, showing every active pipe underneath — so you can see pipe R1 on Braidline while R2 is still on Baseline, side by side, plus a progress bar toward the work order's total project length (summed from each pipe's finished/Coverline length).
 
 ## What's new this round
+
+- **TV view shows progress per section.** Each reel now carries three bars — Baseline, Braidline, Coverline — read from the footage marker on that section's most recent OD check against the section's target length. A finished section shows 100% from its actual length. A section with no target set, or with no footage marker logged yet, shows a hatched bar and a dash rather than an empty bar, so "we don't know" doesn't look like "nothing has run". Footage markers are optional on a reading, so the bars only move when operators log them.
+- **Hand-entered reading times are flagged (admin only).** Operators can still change the time on a reading — that's legitimate when you write a measurement down at the gauge and type it in later. But the server now records when it actually received each reading and how far the claimed time sits from that, and the Reports page marks the difference: "device" for an app-stamped time, or **⚠ back-dated 1h 35m earlier** with a count per section. A client that claims the time was untouched but arrives with the clock more than 5 minutes out is recorded as hand-entered anyway, so the flag doesn't depend on the tablet being honest. None of this appears in the operator view.
 
 - **Braidline setup takes materials.** The longitudinals and the cross braid each get their own material field on the work order form, and both show on the Braidline reference tile and in the emailed report — matching how Baseline already records a material per extruder. Existing work orders have them blank until you edit them and fill them in.
 - **Backend: fewer round trips per request.** The previous round cut how much data each request moved; this one cuts how many separate calls it makes to Google, which is what the remaining wait actually was. Sheet handles and row counts are fetched once per request instead of by every helper that needs them; looking up a single work order scans one column and fetches one row instead of pulling all ~75 columns of every job ever entered; and saving a reading writes the reel row once instead of twice. Saving a reading went from 24 service calls to 15, opening a reel from 41 to 33.

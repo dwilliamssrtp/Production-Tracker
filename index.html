@@ -214,6 +214,26 @@
   .tv-pipe-val.good{color:var(--good);}
   .tv-pipe-val.bad{color:var(--crit);}
   .tv-pipe-timer{font-size:clamp(9px,.95vw,13px);color:var(--mut);margin-top:3px;}
+
+  /* Per-section progress, three thin bars per reel. Kept compact so a reel tile stays
+     readable from across the floor without pushing other work orders off the page. */
+  .tv-secbars{display:flex;flex-direction:column;gap:3px;min-width:clamp(120px,13vw,190px);}
+  .tv-secbar{display:flex;align-items:center;gap:6px;}
+  .tv-secbar-lbl{font-size:clamp(8px,.8vw,11px);font-weight:700;color:var(--mut);
+    letter-spacing:.04em;width:2.2em;flex-shrink:0;}
+  .tv-secbar-track{flex:1;height:clamp(6px,.65vw,9px);background:var(--band);
+    border:1px solid var(--line);border-radius:5px;overflow:hidden;}
+  .tv-secbar-fill{display:block;height:100%;background:var(--blue);}
+  .tv-secbar.done .tv-secbar-fill{background:var(--good);}
+  .tv-secbar.idle .tv-secbar-fill{background:var(--line);}
+  .tv-secbar-pct{font-size:clamp(8px,.85vw,12px);font-weight:700;font-variant-numeric:tabular-nums;
+    width:3.2em;text-align:right;flex-shrink:0;}
+  .tv-secbar.done .tv-secbar-pct{color:var(--good);}
+  .tv-secbar.idle .tv-secbar-pct,.tv-secbar.nodata .tv-secbar-pct{color:var(--mut);font-weight:400;}
+  /* No target length or no footage marker yet — say so rather than drawing an empty bar
+     that reads as "nothing has happened". */
+  .tv-secbar.nodata .tv-secbar-track{background:repeating-linear-gradient(90deg,
+    var(--band) 0 4px, transparent 4px 8px);}
   .tv-dots{display:flex;justify-content:center;gap:9px;margin-top:clamp(16px,2.4vw,30px);}
   .tv-dot{width:10px;height:10px;border-radius:50%;background:var(--line);}
   .tv-dot.active{background:var(--accent);}
@@ -1472,7 +1492,7 @@ function viewOperator(){
     '<h2>Hourly reading</h2>' +
     '<div class="grid g4">' +
       '<div class="fld"><label>Operator</label><input id="opName" value="'+esc(getOperatorName())+'" placeholder="Name"></div>' +
-      '<div class="fld"><label>Time</label><input id="rdTime" type="datetime-local" value="'+nowLocalInputValue()+'"></div>' +
+      '<div class="fld"><label>Time</label><input id="rdTime" type="datetime-local" value="'+nowLocalInputValue()+'" data-touched="0"></div>' +
       (sec==='Braidline' ? '<div class="fld"><label>Pitch (in)</label><input id="rdPitch" type="number" step="0.01"></div>' : '') +
       '<div class="fld"><label>OD (in)</label><input id="rdOD" type="number" step="0.001"></div>' +
       '<div class="fld"><label>Footage marker (ft)</label><input id="rdFootage" type="number" step="1" placeholder="optional"></div>' +
@@ -2088,19 +2108,35 @@ function bindOperator(){
 
   bindProductionTimer(STATE.workOrder, STATE.pipe, sec);
 
+  // Marks the time field as deliberately edited. 'change' rather than 'input' so that
+  // merely focusing or tabbing through a datetime input doesn't count as an edit.
+  var rdTimeEl = E('rdTime');
+  if (rdTimeEl) rdTimeEl.addEventListener('change', function(){ rdTimeEl.dataset.touched = '1'; });
+
   E('submitReadingBtn').addEventListener('click', function(){
     var operator = E('opName').value.trim();
     if (!operator){ toast('Operator name is required', true); return; }
     setOperatorName(operator);
-    var ts = new Date(E('rdTime').value).toISOString();
+
+    /* The time field is prefilled with "now" when the form renders. If the operator never
+     * touched it, send the time at the moment they hit Log — not the prefill, which could
+     * be half an hour stale if the form sat open. That keeps an untouched reading honestly
+     * stamped "Device", and means only a deliberate edit is reported as Manual.
+     *
+     * The server doesn't take this on faith — it compares the claimed time against when it
+     * actually received the reading and overrides a "Device" claim that doesn't hold up. */
+    var timeEl = E('rdTime');
+    var edited = timeEl.dataset.touched === '1';
+    var ts = edited ? new Date(timeEl.value).toISOString() : new Date().toISOString();
+    var timeSource = edited ? 'Manual' : 'Device';
     var odVal = num(E('rdOD').value);
     var footageVal = E('rdFootage') ? E('rdFootage').value : '';
     var jobs = [];
     if (sec === 'Braidline'){
       var pitchVal = num(E('rdPitch') ? E('rdPitch').value : null);
-      if (pitchVal !== null) jobs.push(apiPost('addReading', {pipeCode:STATE.pipeCode, section:sec, type:'Pitch', value:pitchVal, operator:operator, timestamp:ts}));
+      if (pitchVal !== null) jobs.push(apiPost('addReading', {pipeCode:STATE.pipeCode, section:sec, type:'Pitch', value:pitchVal, operator:operator, timestamp:ts, timeSource:timeSource}));
     }
-    if (odVal !== null) jobs.push(apiPost('addReading', {pipeCode:STATE.pipeCode, section:sec, type:'OD', value:odVal, operator:operator, timestamp:ts, footage:footageVal}));
+    if (odVal !== null) jobs.push(apiPost('addReading', {pipeCode:STATE.pipeCode, section:sec, type:'OD', value:odVal, operator:operator, timestamp:ts, timeSource:timeSource, footage:footageVal}));
     if (!jobs.length){ toast('Enter at least one value', true); return; }
     E('submitReadingBtn').disabled = true;
     Promise.all(jobs).then(function(results){
@@ -2934,19 +2970,50 @@ function rpSectionSummaryHtml(data, sec){
   '</section>';
 }
 
+/* Admin-only: how the reading's time got there.
+ *
+ * "Device" means the app stamped it when the reading was logged. "Back-dated" means the
+ * operator typed a different time — shown with how far off it was, so an hour of missed
+ * checks entered at the end of a shift stands out from someone correcting a reading by
+ * five minutes.
+ *
+ * Deliberately not shown in the operator view: it's a supervision signal, and telling the
+ * floor exactly what's being measured just teaches whoever's cutting corners what to avoid. */
+function rpTimeSourceCell(r){
+  if (!r.TimeSource) return '<span class="muted">—</span>'; // logged before this was tracked
+  if (r.TimeSource !== 'Manual') return '<span class="muted">device</span>';
+  var off = Number(r.TimeOffsetMin);
+  var detail = '';
+  if (!isNaN(off) && off !== 0){
+    var mag = Math.abs(off);
+    var amount = mag >= 60 ? fmtHrsMin(mag) : mag + 'm';
+    detail = ' ' + amount + ' ' + (off < 0 ? 'earlier' : 'later');
+  }
+  return '<span class="flag" title="Operator changed the time on this reading">&#9888; back-dated'+esc(detail)+'</span>';
+}
+
 function rpReadingsTableHtml(readings, sec){
   var rows = readings.filter(function(r){ return r.Section === sec; })
     .sort(function(a,b){ return new Date(a.Timestamp) - new Date(b.Timestamp); });
   if (!rows.length) return '<p class="muted">No readings logged.</p>';
+
+  var manual = rows.filter(function(r){ return r.TimeSource === 'Manual'; });
+  var banner = manual.length
+    ? '<p class="muted" style="margin:6px 0 0;font-size:10.5px"><span class="flag">&#9888; '+manual.length+
+      ' of '+rows.length+'</span> reading'+(manual.length===1?' had its':'s had their')+
+      ' time entered by hand rather than stamped by the app.</p>'
+    : '';
+
   return '<table style="margin-top:6px"><thead><tr><th class="l">Time</th><th class="l">Operator</th>' +
-      '<th>Type</th><th>Value</th><th>Footage</th><th>In tol</th></tr></thead><tbody>' +
+      '<th>Type</th><th>Value</th><th>Footage</th><th>In tol</th><th class="l">Time entered</th></tr></thead><tbody>' +
     rows.map(function(r){
       var tol = r.InTol === true || r.InTol === 'TRUE' ? '<span class="ok">yes</span>'
               : (r.InTol === false || r.InTol === 'FALSE') ? '<span class="flag">NO</span>' : '<span class="muted">—</span>';
       return '<tr><td class="l">'+esc(rpShortTime(r.Timestamp))+'</td><td class="l">'+esc(r.Operator)+'</td>' +
         '<td>'+esc(r.Type)+'</td><td class="num">'+esc(r.Value)+'</td>' +
-        '<td class="num">'+(r.Footage===''||r.Footage===undefined?'—':esc(r.Footage))+'</td><td>'+tol+'</td></tr>';
-    }).join('') + '</tbody></table>';
+        '<td class="num">'+(r.Footage===''||r.Footage===undefined?'—':esc(r.Footage))+'</td><td>'+tol+'</td>' +
+        '<td class="l">'+rpTimeSourceCell(r)+'</td></tr>';
+    }).join('') + '</tbody></table>' + banner;
 }
 
 // Every individual wall reading, laid out the way it was taken: one row per clock
@@ -3251,6 +3318,41 @@ function tvTimerLine(p){
     (t.expectedMinutes!==''?' / '+fmtHrsMin(t.expectedMinutes)+(pct!==null?' ('+pct+'%)':''):'')+'</div>';
 }
 
+/* Three progress bars for one reel — Baseline, Braidline, Coverline.
+ *
+ * Progress comes from the footage marker on each section's most recent OD reading
+ * against that section's target length: how far down the reel the last check was taken.
+ * A finished section reads 100% from its actual length instead.
+ *
+ * A section with no target set, or with no footage marker logged yet, shows a hatched
+ * bar and a dash — distinguishing "we don't know" from "nothing has run", which an empty
+ * bar would conflate. */
+var TV_SECTION_ABBR = {Baseline: 'BL', Braidline: 'BR', Coverline: 'CV'};
+
+function tvSectionBarsHtml(p){
+  var prog = p.sectionProgress;
+  if (!prog) return '';
+  return '<div class="tv-secbars">' +
+    ['Baseline','Braidline','Coverline'].map(function(sec){
+      var s = prog[sec] || {};
+      var pct = s.pct;
+      var cls = s.status === 'Complete' ? 'done'
+              : (pct === null || pct === undefined) ? 'nodata'
+              : s.status === 'In progress' ? '' : 'idle';
+      var width = (pct === null || pct === undefined) ? 0 : pct;
+      var label = (pct === null || pct === undefined) ? '&mdash;' : pct + '%';
+      var tip = (s.length !== '' && s.length !== undefined)
+        ? sec + ' — ' + s.length + ' ft' + (s.target ? ' of ' + s.target + ' ft' : '')
+        : sec + (s.target ? ' — no footage logged yet, target ' + s.target + ' ft' : ' — no target length set');
+      return '<div class="tv-secbar '+cls+'" title="'+esc(tip)+'">' +
+        '<span class="tv-secbar-lbl">'+TV_SECTION_ABBR[sec]+'</span>' +
+        '<span class="tv-secbar-track"><span class="tv-secbar-fill" style="width:'+width+'%"></span></span>' +
+        '<span class="tv-secbar-pct">'+label+'</span>' +
+      '</div>';
+    }).join('') +
+  '</div>';
+}
+
 function tvCardHtml(g){
   var target = Number(g.projectLength);
   var pct = (g.projectLength && !isNaN(target) && target > 0) ? Math.max(0, Math.min(100, Math.round(100 * g.producedLength / target))) : null;
@@ -3264,6 +3366,7 @@ function tvCardHtml(g){
       '<div class="tv-pipe-code">'+esc(p.pipeCode)+(p.openProblems?' <span class="tv-issue">&#9888; '+p.openProblems+'</span>':'')+'</div>' +
       '<div class="tv-pipe-sec">'+esc(curSection)+(stale?' &middot; STALE':'')+'</div>' +
       (lr ? '<div class="tv-pipe-val '+valueClass+'">'+esc(lr.Value)+'"</div>' : '<div class="tv-pipe-val muted">&mdash;</div>') +
+      tvSectionBarsHtml(p) +
       tvTimerLine(p) +
     '</div>';
   }).join('');
@@ -3294,6 +3397,7 @@ function renderTVWorkOrder(g){
       '<div class="tv-pipe-code">'+esc(p.pipeCode)+(p.openProblems?' <span class="tv-issue">&#9888; '+p.openProblems+'</span>':'')+'</div>' +
       '<div class="tv-pipe-sec">'+esc(curSection)+(stale?' &middot; STALE':'')+'</div>' +
       (lr ? '<div class="tv-pipe-val '+valueClass+'">'+esc(lr.Value)+'"</div>' : '<div class="tv-pipe-val muted">&mdash;</div>') +
+      tvSectionBarsHtml(p) +
       tvTimerLine(p) +
     '</div>';
   }).join('');

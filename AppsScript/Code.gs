@@ -97,9 +97,18 @@ var HEADERS = {
     // The dashboard needs one reading per reel; deriving that meant scanning the whole
     // Readings sheet — every row, every work order, all of plant history — on every
     // 20-second poll. Written by apiAddReading_, which already has the values in hand.
-    'LastReadingAt', 'LastReadingType', 'LastReadingValue', 'LastReadingInTol'
+    'LastReadingAt', 'LastReadingType', 'LastReadingValue', 'LastReadingInTol',
+
+    // Footage marker of the newest OD reading in each section, denormalised the same way
+    // and for the same reason: the TV view draws a progress bar per section from it, and
+    // deriving it would mean scanning Readings on every refresh.
+    'BL_LastFootage', 'BR_LastFootage', 'CV_LastFootage'
   ],
-  Readings: ['RowId', 'PipeCode', 'Section', 'Timestamp', 'Operator', 'Type', 'Value', 'InTol', 'Footage'],
+  // EnteredAt/TimeSource/TimeOffsetMin appended per the append-only rule. Timestamp is what the
+  // operator says the reading was taken at; EnteredAt is when the server actually received
+  // it. The two diverging is the whole point - see apiAddReading_.
+  Readings: ['RowId', 'PipeCode', 'Section', 'Timestamp', 'Operator', 'Type', 'Value', 'InTol', 'Footage',
+    'EnteredAt', 'TimeSource', 'TimeOffsetMin'],
   ThicknessChecks: ['RowId', 'PipeCode', 'Section', 'Position', 'Timestamp', 'Operator', 'OD',
     'T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12','T13','T14','T15','T16',
     'AvgThickness', 'ComputedID', 'Ovality'],
@@ -195,6 +204,11 @@ var ACTION_ROLES = {
 
 // Unauthenticated — these are how you GET a session, so they can't require one.
 var PUBLIC_ACTIONS = ['login', 'qrLogin'];
+
+// How far a claimed reading time may sit from when the server received it before it's
+// treated as hand-entered regardless of what the client said. Covers device clock skew
+// plus the minute or two it takes to fill the form in.
+var TIME_DRIFT_TOLERANCE_MIN = 5;
 
 var SESSION_DAYS = 30;       // a typed username/password login (the controller's laptop)
 var QR_SESSION_HOURS = 12;   // a scanned-tag login — about one shift on a shared tablet
@@ -342,10 +356,24 @@ function backfillLastReadings_() {
   var pipes = sheetToObjects_(SHEETS.PIPES);
   if (!pipes.length) return 0;
 
+  /* Walked in row order, last one wins.
+   *
+   * Readings are only ever appended, so row order is the order they were entered — which
+   * is exactly what the live path records, since apiAddReading_ overwrites these columns
+   * with whatever was just submitted. Ordering by the Timestamp column instead would
+   * disagree with it: an operator can back-date a reading, and two readings entered in
+   * the same minute tie, in which case the earlier row would win and the summary would
+   * be left showing an older footage than the reel has actually reached. */
   var newest = {};
+  var newestFootage = {}; // pipeCode -> prefix -> footage
   sheetToObjects_(SHEETS.READINGS).forEach(function (r) {
-    var cur = newest[r.PipeCode];
-    if (!cur || new Date(r.Timestamp) > new Date(cur.Timestamp)) newest[r.PipeCode] = r;
+    newest[r.PipeCode] = r;
+
+    if (r.Type !== 'OD' || r.Footage === '' || r.Footage === undefined) return;
+    var prefix = r.Section === 'Baseline' ? 'BL' : r.Section === 'Braidline' ? 'BR' : r.Section === 'Coverline' ? 'CV' : null;
+    if (!prefix) return;
+    if (!newestFootage[r.PipeCode]) newestFootage[r.PipeCode] = {};
+    newestFootage[r.PipeCode][prefix] = r.Footage;
   });
 
   var sheet = getSheet_(SHEETS.PIPES);
@@ -353,14 +381,31 @@ function backfillLastReadings_() {
   var count = 0;
   pipes.forEach(function (p) {
     var r = newest[p.PipeCode];
-    if (!r) return;
-    if (p.LastReadingAt && new Date(p.LastReadingAt) >= new Date(r.Timestamp)) return;
+    var foot = newestFootage[p.PipeCode];
+    if (!r && !foot) return;
+
+    var readingStale = r && !(p.LastReadingAt && new Date(p.LastReadingAt) >= new Date(r.Timestamp));
+    var footageMissing = false;
+    if (foot) {
+      ['BL', 'BR', 'CV'].forEach(function (pfx) {
+        if (foot[pfx] !== undefined && (p[pfx + '_LastFootage'] === '' || p[pfx + '_LastFootage'] === undefined)) footageMissing = true;
+      });
+    }
+    if (!readingStale && !footageMissing) return;
+
     var range = sheet.getRange(p._row, 1, 1, headers.length);
     var values = range.getValues()[0];
-    values[headers.indexOf('LastReadingAt')] = r.Timestamp;
-    values[headers.indexOf('LastReadingType')] = r.Type;
-    values[headers.indexOf('LastReadingValue')] = r.Value;
-    values[headers.indexOf('LastReadingInTol')] = r.InTol;
+    if (readingStale) {
+      values[headers.indexOf('LastReadingAt')] = r.Timestamp;
+      values[headers.indexOf('LastReadingType')] = r.Type;
+      values[headers.indexOf('LastReadingValue')] = r.Value;
+      values[headers.indexOf('LastReadingInTol')] = r.InTol;
+    }
+    if (foot) {
+      ['BL', 'BR', 'CV'].forEach(function (pfx) {
+        if (foot[pfx] !== undefined) values[headers.indexOf(pfx + '_LastFootage')] = foot[pfx];
+      });
+    }
     range.setValues([values]);
     count++;
   });
@@ -1276,10 +1321,30 @@ function apiAddReading_(body) {
   if (isNaN(value)) throw new Error('Reading value must be numeric.');
   var section = body.section, type = body.type;
   var inTol = computeInTol_(wo, section, type, value);
+
+  /* Timestamp provenance.
+   *
+   * The operator can change the time on a reading, which is legitimate — you write the
+   * measurement down at the gauge and type it in when you get back. But it also lets
+   * someone sit on a stack of missed hourly checks and back-date them all at the end of
+   * a shift, which is exactly what the hourly check exists to prevent.
+   *
+   * So the server records when it actually received the reading, and how far the claimed
+   * time sits from that. The client says whether the operator touched the time field, and
+   * that's trusted when it says "Manual" — but not when it says "Device", because a claim
+   * of untouched that arrives with the clock well out is either a back-date or a device
+   * whose clock is wrong, and both are worth a controller seeing. */
+  var enteredAt = nowIso_();
+  var claimedTs = body.timestamp || enteredAt;
+  var offsetMin = Math.round((new Date(claimedTs).getTime() - new Date(enteredAt).getTime()) / 60000);
+  var saysManual = body.timeSource === 'Manual';
+  var timeSource = (saysManual || Math.abs(offsetMin) > TIME_DRIFT_TOLERANCE_MIN) ? 'Manual' : 'Device';
+
   var row = {
-    RowId: newId_(), PipeCode: pipeCode, Section: section, Timestamp: body.timestamp || nowIso_(),
+    RowId: newId_(), PipeCode: pipeCode, Section: section, Timestamp: claimedTs,
     Operator: body.operator || '', Type: type, Value: value, InTol: inTol === null ? '' : (inTol ? 'Y' : 'N'),
-    Footage: numOrBlank_(body.footage)
+    Footage: numOrBlank_(body.footage),
+    EnteredAt: enteredAt, TimeSource: timeSource, TimeOffsetMin: offsetMin
   };
   appendRow_(SHEETS.READINGS, row);
 
@@ -1297,6 +1362,10 @@ function apiAddReading_(body) {
     patch[prefix + '_Status'] = 'In progress';
     patch[prefix + '_StartedAt'] = nowIso_();
   }
+  // Footage marker drives the TV view's per-section progress bar. Only OD readings carry
+  // one, and only when the operator walked out and read the marker, so don't clobber a
+  // good value with a blank from a reading that skipped it.
+  if (type === 'OD' && row.Footage !== '') patch[prefix + '_LastFootage'] = row.Footage;
   updateRowByKey_(SHEETS.PIPES, 'PipeCode', pipeCode, patch);
   cacheClearPipe_(pipeCode);
   return row;
@@ -1585,6 +1654,39 @@ function apiDashboard_() {
     return { Timestamp: p.LastReadingAt, Type: p.LastReadingType, Value: p.LastReadingValue, InTol: p.LastReadingInTol };
   }
 
+  /* Progress through each section, for the TV view's three bars.
+   *
+   * Measured from the footage marker on the section's most recent OD reading against the
+   * section's target length — i.e. how far down the reel the last check was taken. A
+   * finished section reads 100% from its actual length instead, since the final figure is
+   * known exactly and the last check was never at the very end.
+   *
+   * Progress is null, not zero, when there's nothing to go on (no target set, or no
+   * footage marker logged yet) — the bar is then drawn as "no data" rather than implying
+   * the line hasn't moved. */
+  function sectionProgress_(p, wo, prefix) {
+    var status = p[prefix + '_Status'] || 'Not started';
+    var target = Number(wo[prefix + '_TargetLength']);
+    var hasTarget = wo[prefix + '_TargetLength'] !== '' && wo[prefix + '_TargetLength'] !== undefined && !isNaN(target) && target > 0;
+
+    if (status === 'Complete') {
+      var actual = Number(p[prefix + '_ActualLength']);
+      return {
+        status: status, pct: 100,
+        length: isNaN(actual) ? '' : actual,
+        target: hasTarget ? target : ''
+      };
+    }
+    var footage = Number(p[prefix + '_LastFootage']);
+    var hasFootage = p[prefix + '_LastFootage'] !== '' && p[prefix + '_LastFootage'] !== undefined && !isNaN(footage);
+    return {
+      status: status,
+      pct: (hasTarget && hasFootage) ? Math.max(0, Math.min(100, Math.round(100 * footage / target))) : null,
+      length: hasFootage ? footage : '',
+      target: hasTarget ? target : ''
+    };
+  }
+
   var openProblemsByPipe = {};
   problems.forEach(function (p) {
     if (p.Status !== 'Open') return;
@@ -1614,7 +1716,12 @@ function apiDashboard_() {
       overallStatus: p.OverallStatus, lastUpdated: p.LastUpdated, lastReading: lastReadingOf(p),
       blActualLength: p.BL_ActualLength, brActualLength: p.BR_ActualLength, cvActualLength: p.CV_ActualLength,
       openProblems: openProblemsByPipe[p.PipeCode] || 0,
-      prodSection: curSection, prodTiming: prodTiming
+      prodSection: curSection, prodTiming: prodTiming,
+      sectionProgress: {
+        Baseline: sectionProgress_(p, wo, 'BL'),
+        Braidline: sectionProgress_(p, wo, 'BR'),
+        Coverline: sectionProgress_(p, wo, 'CV')
+      }
     });
   });
 
