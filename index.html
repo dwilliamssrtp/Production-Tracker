@@ -397,7 +397,8 @@ function apiGet(action, params){
   var url = API_URL + '?action=' + encodeURIComponent(action) + (qs ? '&' + qs : '');
   return fetch(url).then(function(r){ return r.json(); }).then(function(j){
     if (!j.ok) return handleApiFailure(j);
-    noteApiSuccess();
+    noteApiSuccess(j);
+    LAST_ENVELOPE = j;
     return j.data;
   }).catch(function(err){ noteApiFailure(err); throw err; });
 }
@@ -410,9 +411,35 @@ function apiPost(action, body){
     body: JSON.stringify(payload)
   }).then(function(r){ return r.json(); }).then(function(j){
     if (!j.ok) return handleApiFailure(j);
-    noteApiSuccess();
+    noteApiSuccess(j);
+    LAST_ENVELOPE = j;
     return j.data;
   }).catch(function(err){ noteApiFailure(err); throw err; });
+}
+
+// The last response envelope, kept so apiSave can read the piggybacked reel state and
+// the header can show what the server reported about itself.
+var LAST_ENVELOPE = null;
+
+/* A write that also refreshes the reel, in one request.
+ *
+ * Every operator action used to be save-then-reload: two round trips, and an Apps Script
+ * request costs most of a second before it does any work. Asking the server to return the
+ * reel's new state alongside the write removes the second one entirely.
+ *
+ * Falls back to a reload if the server didn't send it — an older deployed backend, or a
+ * write that succeeded while building the payload didn't. */
+function apiSave(action, body){
+  var payload = Object.assign({withPipe: true}, body || {});
+  if (!payload.pipeCode) payload.pipeCode = STATE.pipeCode;
+  return apiPost(action, payload).then(function(data){
+    var env = LAST_ENVELOPE;
+    if (env && env.pipe){
+      applyPipeData(env.pipe);
+      return data;
+    }
+    return reloadPipe(payload.pipeCode).then(function(){ return data; });
+  });
 }
 
 /* Connection status.
@@ -438,10 +465,20 @@ function setStatus(text, cls){
   el.className = cls || '';
 }
 
-function noteApiSuccess(){
+function noteApiSuccess(envelope){
   CONN.lastOkAt = Date.now();
   CONN.failures = 0;
-  if (isSignedIn()) setStatus('Connected', 'ok');
+  // The server reports how long it spent and which build answered. Worth surfacing to an
+  // admin: "is what I deployed actually live, and is the server or the network the slow
+  // part?" was otherwise unanswerable from the browser.
+  if (envelope){
+    if (envelope.ms !== undefined) CONN.lastMs = envelope.ms;
+    if (envelope.build) CONN.build = envelope.build;
+  }
+  if (!isSignedIn()) return;
+  setStatus(isAdmin() && CONN.lastMs !== undefined
+    ? 'Connected · ' + CONN.lastMs + 'ms' + (CONN.build ? ' · ' + CONN.build : '')
+    : 'Connected', 'ok');
 }
 
 function noteApiFailure(err){
@@ -470,6 +507,36 @@ function checkConnection(){
  * see. These pause while the tab is hidden and refresh once immediately on return, so
  * you still come back to current data.
  */
+/* Two guards for the polling views.
+ *
+ * inFlight: a slow response must not let the next tick fire a second request on top of
+ * it. Apps Script serialises these anyway, so stacking them just queues work and makes
+ * the backlog worse exactly when things are already slow.
+ *
+ * unchanged: most polls come back byte-identical to the last one. Rebuilding a whole
+ * dashboard or TV board's DOM every 20 seconds to redraw the same pixels is wasted work
+ * on a shop tablet, and it resets scroll position and kills any hover. Compare first;
+ * only redraw when something actually moved.
+ */
+var POLL_GUARD = {};
+function pollGuard(key){
+  if (!POLL_GUARD[key]) POLL_GUARD[key] = {inFlight: false, lastJson: null};
+  return POLL_GUARD[key];
+}
+function pollBusy(key){ return pollGuard(key).inFlight; }
+function pollStart(key){ pollGuard(key).inFlight = true; }
+function pollDone(key){ pollGuard(key).inFlight = false; }
+// Returns true when this payload differs from the last one rendered for this key.
+function pollChanged(key, data){
+  var g = pollGuard(key);
+  var json;
+  try { json = JSON.stringify(data); } catch (e) { return true; } // unserialisable — just redraw
+  if (json === g.lastJson) return false;
+  g.lastJson = json;
+  return true;
+}
+function pollInvalidate(key){ pollGuard(key).lastJson = null; }
+
 var POLLERS = [];
 function pollEvery(fn, ms){
   var id = setInterval(function(){ if (!document.hidden) fn(); }, ms);
@@ -481,6 +548,10 @@ function pollEvery(fn, ms){
 function stopPolling(){
   POLLERS.forEach(function(p){ clearInterval(p.id); });
   POLLERS = [];
+  // Navigating replaces #app, so the next view starts with an empty root. The
+  // "unchanged, don't redraw" guard must forget what it last drew or returning to a view
+  // whose data hasn't moved would skip the render and leave the page blank.
+  POLL_GUARD = {};
 }
 document.addEventListener('visibilitychange', function(){
   if (document.hidden) return;
@@ -1931,11 +2002,11 @@ function bindProblemReportTab(){
     };
 
     Promise.all(files.map(readFile)).then(function(photos){
-      return apiPost('addProblemReport', {
+      return apiSave('addProblemReport', {
         pipeCode: STATE.pipeCode, section: section, footageMarker: footage, description: description,
         operator: operator, timestamp: ts, photos: photos
       });
-    }).then(function(){ toast('Problem reported'); return reloadPipe(STATE.pipeCode); })
+    }).then(function(){ toast('Problem reported'); })
       .then(function(){ render(); })
       .catch(function(err){ toast(err.message, true); E('submitProblemBtn').disabled = false; });
   });
@@ -1946,8 +2017,8 @@ function bindProblemReportTab(){
       var notes = prompt('Resolution notes (optional):', '');
       if (notes === null) return;
       btn.disabled = true;
-      apiPost('resolveProblemReport', {reportId: reportId, resolvedBy: getOperatorName() || 'Unknown', resolutionNotes: notes})
-        .then(function(){ toast('Marked resolved'); return reloadPipe(STATE.pipeCode); })
+      apiSave('resolveProblemReport', {reportId: reportId, resolvedBy: getOperatorName() || 'Unknown', resolutionNotes: notes})
+        .then(function(){ toast('Marked resolved'); })
         .then(function(){ render(); })
         .catch(function(err){ toast(err.message, true); btn.disabled = false; });
     });
@@ -2014,8 +2085,8 @@ function bindProductionTimer(wo, pipe, sec){
     var operator = getOperatorName() || (E('opName') ? E('opName').value.trim() : '');
     if (!operator){ toast('Enter your name (Hourly reading section) first', true); return; }
     confirmBtn.disabled = true;
-    apiPost('startDowntime', {pipeCode: STATE.pipeCode, section: sec, reasonCode: E('downReason').value, notes: E('downNotes').value.trim(), operator: operator})
-      .then(function(){ toast('Downtime started'); return reloadPipe(STATE.pipeCode); })
+    apiSave('startDowntime', {pipeCode: STATE.pipeCode, section: sec, reasonCode: E('downReason').value, notes: E('downNotes').value.trim(), operator: operator})
+      .then(function(){ toast('Downtime started'); })
       .then(function(){ render(); })
       .catch(function(err){ toast(err.message, true); confirmBtn.disabled = false; });
   });
@@ -2023,8 +2094,8 @@ function bindProductionTimer(wo, pipe, sec){
   if (resumeBtn) resumeBtn.addEventListener('click', function(){
     var operator = getOperatorName() || (E('opName') ? E('opName').value.trim() : '');
     resumeBtn.disabled = true;
-    apiPost('endDowntime', {pipeCode: STATE.pipeCode, section: sec, operator: operator})
-      .then(function(){ toast('Production resumed'); return reloadPipe(STATE.pipeCode); })
+    apiSave('endDowntime', {pipeCode: STATE.pipeCode, section: sec, operator: operator})
+      .then(function(){ toast('Production resumed'); })
       .then(function(){ render(); })
       .catch(function(err){ toast(err.message, true); resumeBtn.disabled = false; });
   });
@@ -2100,8 +2171,8 @@ function bindOperator(){
   if (confirmBtn) confirmBtn.addEventListener('click', function(){
     if (!confirm('Mark '+sec+' complete for reel '+STATE.pipeCode+'?')) return;
     confirmBtn.disabled = true;
-    apiPost('setSectionStatus', {pipeCode: STATE.pipeCode, section: sec, status: 'Complete', actualLength: E('completeLength').value})
-      .then(function(){ toast(sec+' marked complete'); return reloadPipe(STATE.pipeCode); })
+    apiSave('setSectionStatus', {pipeCode: STATE.pipeCode, section: sec, status: 'Complete', actualLength: E('completeLength').value})
+      .then(function(){ toast(sec+' marked complete'); })
       .then(function(){ render(); })
       .catch(function(err){ toast(err.message, true); confirmBtn.disabled = false; });
   });
@@ -2131,19 +2202,25 @@ function bindOperator(){
     var timeSource = edited ? 'Manual' : 'Device';
     var odVal = num(E('rdOD').value);
     var footageVal = E('rdFootage') ? E('rdFootage').value : '';
-    var jobs = [];
+    // One entry, one request. A Braidline entry logs a pitch and an OD, which used to be
+    // two POSTs plus a reload — three round trips for one press of Log, each carrying the
+    // best part of a second of Apps Script overhead before doing any work.
+    var readings = [];
     if (sec === 'Braidline'){
       var pitchVal = num(E('rdPitch') ? E('rdPitch').value : null);
-      if (pitchVal !== null) jobs.push(apiPost('addReading', {pipeCode:STATE.pipeCode, section:sec, type:'Pitch', value:pitchVal, operator:operator, timestamp:ts, timeSource:timeSource}));
+      if (pitchVal !== null) readings.push({type:'Pitch', value:pitchVal});
     }
-    if (odVal !== null) jobs.push(apiPost('addReading', {pipeCode:STATE.pipeCode, section:sec, type:'OD', value:odVal, operator:operator, timestamp:ts, timeSource:timeSource, footage:footageVal}));
-    if (!jobs.length){ toast('Enter at least one value', true); return; }
+    if (odVal !== null) readings.push({type:'OD', value:odVal, footage:footageVal});
+    if (!readings.length){ toast('Enter at least one value', true); return; }
+
     E('submitReadingBtn').disabled = true;
-    Promise.all(jobs).then(function(results){
-      var anyBad = results.some(function(r){ return r.InTol === 'N'; });
-      toast('Reading logged' + (anyBad ? ' — OUT OF TOLERANCE' : ''), anyBad);
-      return reloadPipe(STATE.pipeCode);
-    }).then(function(){ render(); })
+    apiSave('addReadings', {pipeCode:STATE.pipeCode, section:sec, operator:operator,
+                            timestamp:ts, timeSource:timeSource, readings:readings})
+      .then(function(data){
+        var anyBad = (data.readings || []).some(function(r){ return r.InTol === 'N'; });
+        toast('Reading logged' + (anyBad ? ' — OUT OF TOLERANCE' : ''), anyBad);
+        render();
+      })
       .catch(function(err){ toast(err.message, true); E('submitReadingBtn').disabled = false; });
   });
 
@@ -2160,8 +2237,8 @@ function bindOperator(){
       qsa('.tPoint').forEach(function(inp){ points[Number(inp.dataset.i)] = inp.value; });
       var ts = new Date(E('tcTime').value).toISOString();
       E('submitCheckBtn').disabled = true;
-      apiPost('addThicknessCheck', {pipeCode:STATE.pipeCode, section:sec, position:E('tcPosition').value, od:od, points:points, operator:operator, timestamp:ts})
-        .then(function(){ toast('Thickness check saved'); return reloadPipe(STATE.pipeCode); })
+      apiSave('addThicknessCheck', {pipeCode:STATE.pipeCode, section:sec, position:E('tcPosition').value, od:od, points:points, operator:operator, timestamp:ts})
+        .then(function(){ toast('Thickness check saved'); })
         .then(function(){ render(); })
         .catch(function(err){ toast(err.message, true); E('submitCheckBtn').disabled = false; });
     });
@@ -2180,10 +2257,10 @@ function bindOperator(){
       if (!material){ toast('Enter a material name', true); return; }
       var ts = new Date(E('matTime').value).toISOString();
       E('submitMaterialBtn').disabled = true;
-      apiPost('addMaterialUsage', {
+      apiSave('addMaterialUsage', {
         pipeCode: STATE.pipeCode, section: sec, material: material, lotNumber: E('matLot').value.trim(),
         startWeight: E('matStart').value, endWeight: E('matEnd').value, operator: operator, timestamp: ts
-      }).then(function(){ toast('Material usage logged'); return reloadPipe(STATE.pipeCode); })
+      }).then(function(){ toast('Material usage logged'); })
         .then(function(){ render(); })
         .catch(function(err){ toast(err.message, true); E('submitMaterialBtn').disabled = false; });
     });
@@ -2194,8 +2271,8 @@ function bindOperator(){
     if (!text){ toast('Enter a note', true); return; }
     var operator = E('opName') ? E('opName').value.trim() : getOperatorName();
     E('submitNoteBtn').disabled = true;
-    apiPost('addNote', {pipeCode:STATE.pipeCode, section:sec, text:text, operator: operator || getOperatorName()})
-      .then(function(){ toast('Note added'); return reloadPipe(STATE.pipeCode); })
+    apiSave('addNote', {pipeCode:STATE.pipeCode, section:sec, text:text, operator: operator || getOperatorName()})
+      .then(function(){ toast('Note added'); })
       .then(function(){ render(); })
       .catch(function(err){ toast(err.message, true); E('submitNoteBtn').disabled = false; });
   });
@@ -2208,9 +2285,9 @@ function bindOperator(){
     var reader = new FileReader();
     E('submitPhotoBtn').disabled = true;
     reader.onload = function(){
-      apiPost('addPhoto', {pipeCode:STATE.pipeCode, section:sec, caption:caption, operator: operator || getOperatorName(),
+      apiSave('addPhoto', {pipeCode:STATE.pipeCode, section:sec, caption:caption, operator: operator || getOperatorName(),
         imageBase64: reader.result, filename: file.name, mimeType: file.type || 'image/jpeg'})
-        .then(function(){ toast('Photo uploaded'); return reloadPipe(STATE.pipeCode); })
+        .then(function(){ toast('Photo uploaded'); })
         .then(function(){ render(); })
         .catch(function(err){ toast(err.message, true); E('submitPhotoBtn').disabled = false; });
     };
@@ -2231,8 +2308,15 @@ function bindDashboard(){
 }
 
 function loadDashboard(){
-  apiGet('dashboard').then(function(d){ renderDashboard(d); })
-    .catch(function(err){ E('dashRoot').innerHTML = '<p class="flag">Could not load dashboard: '+esc(err.message)+'</p>'; });
+  if (pollBusy('dash')) return;
+  pollStart('dash');
+  apiGet('dashboard').then(function(d){
+    // serverTime changes every poll, so compare everything else — otherwise nothing is
+    // ever "unchanged" and the guard would never do anything.
+    if (pollChanged('dash', {a: d.active, r: d.recentComplete})) renderDashboard(d);
+  })
+    .catch(function(err){ if (!err.sessionExpired) E('dashRoot').innerHTML = '<p class="flag">Could not load dashboard: '+esc(err.message)+'</p>'; })
+    .then(function(){ pollDone('dash'); });
 }
 
 function lengthProgressHtml(g){
@@ -2331,8 +2415,13 @@ function bindTimers(){
 }
 
 function loadTimers(){
-  apiGet('dashboard').then(function(d){ renderTimers(d); })
-    .catch(function(err){ var r = E('timersRoot'); if (r) r.innerHTML = '<p class="flag">'+esc(err.message)+'</p>'; });
+  if (pollBusy('timers')) return;
+  pollStart('timers');
+  apiGet('dashboard').then(function(d){
+    if (pollChanged('timers', d.active)) renderTimers(d);
+  })
+    .catch(function(err){ if (!err.sessionExpired){ var r = E('timersRoot'); if (r) r.innerHTML = '<p class="flag">'+esc(err.message)+'</p>'; } })
+    .then(function(){ pollDone('timers'); });
 }
 
 function renderTimers(d){
@@ -3253,8 +3342,13 @@ function loadTVBoard(){
     });
     return;
   }
+  if (pollBusy('tv')) return;
+  pollStart('tv');
   apiGet('dashboard').then(function(d){
     STATE.tvLastData = d;
+    // The board also redraws on page rotation, which isn't driven by new data — so the
+    // page index is part of what "changed" means here.
+    if (!pollChanged('tv', {a: d.active, r: d.recentComplete, wo: STATE.tvDrillWO, pg: STATE.tvPage})) return;
     if (STATE.tvDrillWO){
       var g = d.active.concat(d.recentComplete).filter(function(x){ return x.workOrderCode === STATE.tvDrillWO; })[0];
       if (!g){ tvGoBoard(); return; }
@@ -3263,9 +3357,10 @@ function loadTVBoard(){
       renderTVBoard(d);
     }
   }).catch(function(err){
+    if (err && err.sessionExpired) return;
     var r = E('tvRoot');
     if (r) r.innerHTML = '<div class="tv-empty flag">Could not reach the server:<br>'+esc(err.message)+'</div>';
-  });
+  }).then(function(){ pollDone('tv'); });
 }
 
 function advanceTVPage(){

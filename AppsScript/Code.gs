@@ -182,6 +182,7 @@ var ACTION_ROLES = {
 
   // Logging against one reel — the operator's whole job
   addReading: ['Admin', 'Operator'],
+  addReadings: ['Admin', 'Operator'],
   addThicknessCheck: ['Admin', 'Operator'],
   addNote: ['Admin', 'Operator'],
   addPhoto: ['Admin', 'Operator'],
@@ -208,6 +209,11 @@ var PUBLIC_ACTIONS = ['login', 'qrLogin'];
 // How far a claimed reading time may sit from when the server received it before it's
 // treated as hand-entered regardless of what the client said. Covers device clock skew
 // plus the minute or two it takes to fill the form in.
+// Bumped whenever Code.gs changes in a way that matters. Returned by ping and shown in
+// the site's header, because "is the backend I just edited actually deployed?" is
+// otherwise unanswerable from the outside — saving the editor does not publish it.
+var BUILD = '2026-10-05.1';
+
 var TIME_DRIFT_TOLERANCE_MIN = 5;
 
 var SESSION_DAYS = 30;       // a typed username/password login (the controller's laptop)
@@ -1009,13 +1015,14 @@ function apiRotateOperatorKey_() {
 // ---------- web entry points ----------
 
 function doGet(e) {
+  var _t0 = Date.now();
   _memoReset_(); // Apps Script may reuse a warm context across invocations
   try {
     var action = e.parameter.action || 'ping';
     authorize_(action, e.parameter.token);
     var result;
     switch (action) {
-      case 'ping': result = { ok: true, time: nowIso_() }; break;
+      case 'ping': result = { ok: true, time: nowIso_(), build: BUILD }; break;
       case 'getPipe':
         var pipeCode = String(e.parameter.pipeCode || '').trim();
         var pipeKey = 'pipe:' + pipeCode;
@@ -1033,14 +1040,15 @@ function doGet(e) {
       case 'workOrderDeletePreview': result = apiWorkOrderDeletePreview_(e.parameter.code); break;
       default: throw new Error('Unknown GET action: ' + action);
     }
-    return jsonOut_({ ok: true, data: result });
+    return jsonOut_({ ok: true, data: result }, _t0);
   } catch (err) {
-    if (err && err.authError) return jsonOut_({ ok: false, error: 'Not signed in', code: 'session_invalid' });
-    return jsonOut_({ ok: false, error: String(err && err.message || err) });
+    if (err && err.authError) return jsonOut_({ ok: false, error: 'Not signed in', code: 'session_invalid' }, _t0);
+    return jsonOut_({ ok: false, error: String(err && err.message || err) }, _t0);
   }
 }
 
 function doPost(e) {
+  var _t0 = Date.now();
   _memoReset_(); // Apps Script may reuse a warm context across invocations
   try {
     var body = JSON.parse(e.postData.contents);
@@ -1054,9 +1062,9 @@ function doPost(e) {
       if (PUBLIC_ACTIONS.indexOf(action) >= 0) {
         if (action === 'login') result = apiLogin_(body);
         else result = apiQrLogin_(body);
-        return jsonOut_({ ok: true, data: result });
+        return jsonOut_({ ok: true, data: result }, _t0);
       }
-      if (action === 'logout') return jsonOut_({ ok: true, data: apiLogout_(body) });
+      if (action === 'logout') return jsonOut_({ ok: true, data: apiLogout_(body) }, _t0);
 
       var acc = authorize_(action, body.token);
       switch (action) {
@@ -1064,6 +1072,7 @@ function doPost(e) {
         case 'updateWorkOrder': result = apiUpdateWorkOrder_(body); break;
         case 'createPipe': result = apiCreatePipe_(body); break;
         case 'addReading': result = apiAddReading_(body); break;
+        case 'addReadings': result = apiAddReadings_(body); break;
         case 'addThicknessCheck': result = apiAddThicknessCheck_(body); break;
         case 'addNote': result = apiAddNote_(body); break;
         case 'addPhoto': result = apiAddPhoto_(body); break;
@@ -1092,14 +1101,36 @@ function doPost(e) {
     } finally {
       lock.releaseLock();
     }
-    return jsonOut_({ ok: true, data: result });
+    /* Hand back the reel's refreshed state with the write that changed it.
+     *
+     * Every operator action used to be two requests — save, then a separate reload to
+     * redraw. An Apps Script web app carries most of a second of fixed overhead per
+     * request whatever it's doing, so that doubled the wait on everything the floor does,
+     * and logging a Braidline reading (pitch, OD, reload) was three.
+     *
+     * The data is already to hand here, right after the write, so sending it back costs
+     * one extra sheet pass instead of a whole extra round trip. Failing to build it must
+     * not fail the write — the write already succeeded — so the client just falls back to
+     * reloading if `pipe` is missing. */
+    var out = { ok: true, data: result };
+    if (body.withPipe && body.pipeCode) {
+      try {
+        var pc = String(body.pipeCode).trim();
+        out.pipe = apiGetPipe_(pc);
+        cacheSetJson_('pipe:' + pc, out.pipe);
+      } catch (e) { /* client falls back to its own reload */ }
+    }
+    return jsonOut_(out, _t0);
   } catch (err) {
-    if (err && err.authError) return jsonOut_({ ok: false, error: 'Not signed in', code: 'session_invalid' });
-    return jsonOut_({ ok: false, error: String(err && err.message || err) });
+    if (err && err.authError) return jsonOut_({ ok: false, error: 'Not signed in', code: 'session_invalid' }, _t0);
+    return jsonOut_({ ok: false, error: String(err && err.message || err) }, _t0);
   }
 }
 
-function jsonOut_(obj) {
+// Every response carries how long the server spent on it and which build answered, so
+// "it feels slow" can be checked against a number instead of guessed at.
+function jsonOut_(obj, t0) {
+  if (t0) { obj.ms = Date.now() - t0; obj.build = BUILD; }
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -1369,6 +1400,23 @@ function apiAddReading_(body) {
   updateRowByKey_(SHEETS.PIPES, 'PipeCode', pipeCode, patch);
   cacheClearPipe_(pipeCode);
   return row;
+}
+
+// One Braidline entry logs a pitch and an OD, which was two separate requests plus a
+// reload. They share a timestamp and a reel, so they belong in one.
+function apiAddReadings_(body) {
+  var list = body.readings || [];
+  if (!list.length) throw new Error('No readings supplied');
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    var one = list[i];
+    out.push(apiAddReading_({
+      pipeCode: body.pipeCode, section: body.section,
+      timestamp: body.timestamp, timeSource: body.timeSource, operator: body.operator,
+      type: one.type, value: one.value, footage: one.footage
+    }));
+  }
+  return { readings: out };
 }
 
 function computeInTol_(wo, section, type, value) {

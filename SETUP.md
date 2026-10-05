@@ -43,6 +43,10 @@ Note on the deployment setting: "Who has access: **Anyone**" only means Google w
 
 ## What's new this round
 
+- **Every operator action is now one request instead of two.** Saving a reading, a note, a thickness check, a photo, material usage, a problem report, starting or ending downtime, marking a section complete — each used to save, then make a second request to reload the reel so the screen could redraw. An Apps Script request carries most of a second of fixed overhead before it does any work, so that doubled the wait on everything the floor does. The server now returns the reel's refreshed state with the write that changed it. A Braidline reading was the worst case at three requests (pitch, OD, reload) and is now one.
+- **The header shows the server's response time and build.** Signed in as an admin you'll see `Connected · 142ms · 2026-10-05.1`. The build string comes from `Code.gs`, so if it doesn't match what you just deployed, the deployment didn't take — see the note in [Updating later](#updating-later). This exists because "is the backend actually live, and is the server or the network the slow part?" was impossible to answer from the browser.
+- **Background polling no longer stacks up or redraws for nothing.** A slow response used to let the next 20-second tick fire another request on top of it, queueing work exactly when things were already slow. And the dashboard and TV board rebuilt their entire DOM every refresh even when the data was byte-identical. Both fixed.
+
 - **TV view shows progress per section.** Each reel now carries three bars — Baseline, Braidline, Coverline — read from the footage marker on that section's most recent OD check against the section's target length. A finished section shows 100% from its actual length. A section with no target set, or with no footage marker logged yet, shows a hatched bar and a dash rather than an empty bar, so "we don't know" doesn't look like "nothing has run". Footage markers are optional on a reading, so the bars only move when operators log them.
 - **Hand-entered reading times are flagged (admin only).** Operators can still change the time on a reading — that's legitimate when you write a measurement down at the gauge and type it in later. But the server now records when it actually received each reading and how far the claimed time sits from that, and the Reports page marks the difference: "device" for an app-stamped time, or **⚠ back-dated 1h 35m earlier** with a count per section. A client that claims the time was untouched but arrives with the clock more than 5 minutes out is recorded as hand-entered anyway, so the flag doesn't depend on the tablet being honest. None of this appears in the operator view.
 
@@ -161,6 +165,12 @@ Whenever I send a new `Code.gs`:
 3. **Deploy > Manage deployments** → pencil icon → **New version** → Deploy. **Same URL** — `index.html` doesn't need touching unless I say otherwise.
 
 If `index.html` also changed, re-host it the normal way.
+
+### Checking the deployment actually took
+
+Step 3 is the one that gets missed, and missing it is silent: saving the editor does **not** publish anything, so the site keeps running the previous version and every change you were expecting simply isn't there.
+
+Sign in as an admin and look at the header. It reads `Connected · 142ms · 2026-10-05.1`. That last part is the build string from the `Code.gs` you deployed — if it doesn't match the `BUILD` line near the top of the file I sent you, the new version is not live and you need to redo step 3. The number before it is how long the server spent on the last request, which separates a slow backend from a slow network.
 
 ## Known limitations / things to sanity-check with Engineering
 
