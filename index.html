@@ -176,7 +176,12 @@
   .chart-line{stroke:var(--blue);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;}
   .chart-dot{fill:var(--blue);stroke:var(--field);stroke-width:2;}
   .chart-dot.bad{fill:var(--crit);}
+  /* Distinct from the out-of-tolerance red on purpose: red means the pipe is wrong,
+     this means the number is wrong, and they call for different responses. */
+  .chart-dot.typo{fill:var(--warn);stroke:var(--field);stroke-width:2;}
   .chart-dev-label{font-size:11px;fill:var(--crit);font-weight:700;font-family:"Segoe UI",Arial,sans-serif;}
+  .chart-typo-label{font-size:11px;fill:var(--warn);font-weight:700;font-family:"Segoe UI",Arial,sans-serif;}
+  .suspect{color:var(--warn);font-weight:700;}
   .chart-problem-line{stroke:var(--crit);stroke-width:1;stroke-dasharray:2 3;opacity:.55;}
   .chart-problem-flag{font-size:15px;fill:var(--crit);}
 
@@ -271,6 +276,24 @@
     body.printing-report .rp-sec{break-before:page;page-break-before:always;}
     body.printing-report table{font-size:9px;}
     body.printing-report .kpi{border-color:#bbb;}
+
+    /* Reel tags are printed on 4.063" x 6.25" label stock, one per label. The page size
+       itself is injected at print time (see printTags) because @page can't be switched
+       on a body class — a report and a label can't both own the sheet size. */
+    .labeltag{
+      width:4.063in; height:6.25in; box-sizing:border-box; padding:0.20in 0.16in 0.14in;
+      display:flex; flex-direction:column; align-items:center; justify-content:flex-start;
+      text-align:center; overflow:hidden; color:#000;
+      font-family:"Segoe UI",Arial,Helvetica,sans-serif;
+      page-break-after:always; break-after:page;
+    }
+    .labeltag:last-child{ page-break-after:auto; break-after:auto; }
+    .labeltag svg{ width:3.3in; height:3.3in; display:block; }
+    .labeltag .lt-code{ font-size:30pt; font-weight:800; line-height:1.05; margin-top:.10in;
+                        word-break:break-all; }
+    .labeltag .lt-wo{ font-size:13pt; font-weight:700; margin-top:.06in; }
+    .labeltag .lt-meta{ font-size:11pt; margin-top:.04in; }
+    .labeltag .lt-foot{ font-size:8pt; color:#444; margin-top:auto; }
   }
   @media (max-width:640px){
     .g2,.g3,.g4,.g6,.kpis{grid-template-columns:repeat(2,1fr);}
@@ -1201,11 +1224,13 @@ function lookupCode(code){
         '<span class="spacer"></span>' +
         '<button class="btn" id="viewWodBtn">View work order dashboard</button>' +
         '<button class="btn" id="editWoBtn">Edit targets</button>' +
+        '<button class="btn" id="printAllTagsBtn">Print all tags</button>' +
         '<button class="btn pri" id="addPipeBtn">+ Add new reel</button></div>' +
         pipesHtml;
       E('viewWodBtn').addEventListener('click', function(){ go('woDashboard', {workOrderCode: wo.Code}); });
       E('editWoBtn').addEventListener('click', function(){ go('controller', {workOrderCode: wo.Code}); });
       E('addPipeBtn').addEventListener('click', function(){ go('addPipe', {workOrderCode: wo.Code}); });
+      E('printAllTagsBtn').addEventListener('click', function(){ printAllTagsFor(wo.Code, this); });
       qsa('.homePipeRow', box).forEach(function(td){
         td.addEventListener('click', function(){ lookupCode(td.dataset.pipe); });
       });
@@ -1479,6 +1504,69 @@ function tagUrlFor(pipeCode, workOrderCode){
     '&k=' + encodeURIComponent(STATE.operatorKey || '');
 }
 
+var LABEL_W_IN = 4.063, LABEL_H_IN = 6.25;
+
+// One label's worth of markup. `wo` supplies the human-readable text; the QR is the only
+// part that has to be right for the scanner.
+function labelTagHtml(pipeCode, workOrderCode, wo){
+  var qrObj = qrcode(0, 'M');
+  qrObj.addData(tagUrlFor(pipeCode, workOrderCode));
+  qrObj.make();
+  wo = wo || {};
+  return '<div class="labeltag">' +
+    qrObj.createSvgTag({cellSize: 8, margin: 2}) +
+    '<div class="lt-code">'+esc(pipeCode)+'</div>' +
+    '<div class="lt-wo">'+esc(workOrderCode)+'</div>' +
+    '<div class="lt-meta">'+esc(wo.Customer||'')+'</div>' +
+    '<div class="lt-meta">'+esc(wo.ProductCode||'')+(wo.PipeSize?' &middot; '+esc(wo.PipeSize):'')+'</div>' +
+    '<div class="lt-foot">Scan to log production</div>' +
+  '</div>';
+}
+
+/* Prints whatever labels are passed, on the label stock.
+ *
+ * The page size has to be injected rather than written into the stylesheet: @page can't
+ * be made conditional on a class, and this app also prints full-page reports. So the
+ * label sheet size exists only for the duration of the print and is removed afterwards.
+ */
+function printTags(tagsHtml){
+  var style = document.createElement('style');
+  style.id = 'labelPageSize';
+  style.textContent = '@page { size: '+LABEL_W_IN+'in '+LABEL_H_IN+'in; margin: 0; }';
+  document.head.appendChild(style);
+  E('printTag').innerHTML = tagsHtml;
+
+  var cleanup = function(){
+    var s = document.getElementById('labelPageSize');
+    if (s) s.parentNode.removeChild(s);
+  };
+  window.addEventListener('afterprint', function h(){ window.removeEventListener('afterprint', h); cleanup(); });
+  setTimeout(cleanup, 1500); // afterprint doesn't fire everywhere
+  window.print();
+}
+
+// Every reel on a work order, one label each, in one print job — so reprinting after a
+// key rotation isn't a reel-at-a-time job.
+function printAllTagsFor(workOrderCode, btn){
+  if (btn) btn.disabled = true;
+  var done = function(){ if (btn) btn.disabled = false; };
+  Promise.all([ensureOperatorKey(), apiGet('getWorkOrderInfo', {code: workOrderCode})])
+    .then(function(res){
+      var info = res[1];
+      var pipes = info.pipes || [];
+      if (!pipes.length){ toast('No reels on this work order yet', true); done(); return; }
+      printTags(pipes.map(function(p){
+        return labelTagHtml(p.PipeCode, workOrderCode, info.workOrder);
+      }).join(''));
+      toast('Printing ' + pipes.length + ' tag' + (pipes.length===1?'':'s'));
+      done();
+    })
+    .catch(function(err){
+      done();
+      if (!err.sessionExpired) toast((err && err.message) || 'Could not build the tags', true);
+    });
+}
+
 function viewTagPrinted(){
   var pipe = STATE.pipe, wo = STATE.workOrder;
   return '' +
@@ -1515,13 +1603,6 @@ function bindTagPrinted(){
   ensureOperatorKey().then(function(){
     var qrObj = qrcode(0, 'M'); qrObj.addData(tagUrlFor(pipe.PipeCode, pipe.WorkOrderCode)); qrObj.make();
     E('tagQr').innerHTML = qrObj.createSvgTag({cellSize:5, margin:4});
-    E('printTag').innerHTML = '<div style="font-family:Segoe UI,Arial,sans-serif;padding:24px;text-align:center;max-width:3in">' +
-      qrObj.createSvgTag({cellSize:6, margin:4}) +
-      '<div style="font-size:20px;font-weight:700;margin-top:8px">'+esc(pipe.PipeCode)+'</div>' +
-      '<div style="font-size:11px;color:#555">Work order '+esc(pipe.WorkOrderCode)+'</div>' +
-      '<div style="font-size:12px;color:#555">'+esc(wo.Customer||'')+'</div>' +
-      '<div style="font-size:12px;color:#555">'+esc(wo.ProductCode||'')+' &middot; '+esc(wo.PipeSize||'')+'</div>' +
-    '</div>';
   }).catch(function(err){
     if (err && err.sessionExpired) return;
     // The QR library throws bare strings, not Errors, so err.message can be undefined —
@@ -1529,7 +1610,13 @@ function bindTagPrinted(){
     E('tagQr').innerHTML = '<p class="flag">Could not build the tag: '+esc((err && err.message) || err || 'unknown error')+'</p>';
   });
 
-  E('printBtn').addEventListener('click', function(){ window.print(); });
+  // Built at print time rather than kept in the DOM, so it always carries the current
+  // operator key and matches the batch print exactly.
+  E('printBtn').addEventListener('click', function(){
+    ensureOperatorKey()
+      .then(function(){ printTags(labelTagHtml(pipe.PipeCode, pipe.WorkOrderCode, wo)); })
+      .catch(function(err){ if (!err.sessionExpired) toast((err && err.message) || 'Could not build the tag', true); });
+  });
 
   if (STATE.tagReturn){
     E('tagBackBtn').addEventListener('click', function(){
@@ -2279,6 +2366,25 @@ function bindOperator(){
     if (odVal !== null) readings.push({type:'OD', value:odVal, footage:footageVal});
     if (!readings.length){ toast('Enter at least one value', true); return; }
 
+    /* Catch a mistyped number before it's recorded rather than after.
+     *
+     * Only for values so far out that they can't be a real measurement — an ordinary
+     * out-of-tolerance reading saves silently as it always has, because that's a real
+     * result the operator needs recorded, not questioned. */
+    var suspect = readings.filter(function(r){
+      return isLikelyTypo(r.value, targetTolFor(STATE.workOrder, sec, r.type));
+    });
+    if (suspect.length){
+      var tt0 = targetTolFor(STATE.workOrder, sec, suspect[0].type);
+      var msg = suspect.map(function(r){
+        var t = targetTolFor(STATE.workOrder, sec, r.type);
+        return r.type + ': you entered ' + r.value + '"  (target ' + t.target + '")';
+      }).join('\n');
+      if (!confirm('That reading looks like a typo.\n\n' + msg +
+                   '\n\nThat is far too far out to be a real measurement. Check the decimal point.\n\n' +
+                   'Save it anyway?')) return;
+    }
+
     E('submitReadingBtn').disabled = true;
     apiSave('addReadings', {pipeCode:STATE.pipeCode, section:sec, operator:operator,
                             timestamp:ts, timeSource:timeSource, readings:readings})
@@ -2690,6 +2796,48 @@ function renderPipeDetail(){
   });
 }
 
+/* Telling a mistyped reading from a genuinely bad one.
+ *
+ * Out of tolerance is already flagged red, and rightly — that's a process problem the
+ * operator has to see. A typo is a different animal: 23.75 where 2.375 was meant isn't a
+ * pipe ten times oversize, it's a misplaced decimal. Left in the data it rescales the
+ * whole OD chart so real variation flattens to a line, and drags the min/max/average with
+ * it — one slip wrecks the record for the entire reel.
+ *
+ * Both conditions must hold before anything is called a typo, so a genuinely bad run is
+ * never quietly dismissed as one:
+ *   - more than TYPO_TOL_MULTIPLE tolerance bands off target. A real excursion that far
+ *     out would have stopped the line long before anyone typed it in.
+ *   - and off by more than TYPO_MIN_FRACTION of the target itself, so a very tight
+ *     tolerance doesn't make ordinary drift look like a mistake.
+ *
+ * Derived from the work order's target rather than stored on the reading: it's a
+ * judgement about plausibility given the spec, so it should follow the spec if the spec
+ * is corrected, and it needs no schema change.
+ */
+var TYPO_TOL_MULTIPLE = 10;
+var TYPO_MIN_FRACTION = 0.2;
+
+function targetTolFor(wo, section, type){
+  if (!wo) return null;
+  var prefix = section==='Baseline'?'BL':section==='Braidline'?'BR':'CV';
+  var t, tol;
+  if (type === 'Pitch'){ t = wo.BR_TargetPitch; tol = wo.BR_PitchTol; }
+  else { t = wo[prefix+'_TargetOD']; tol = wo[prefix+'_ODTol']; }
+  if (t===''||t===undefined||t===null||tol===''||tol===undefined||tol===null) return null;
+  t = Number(t); tol = Number(tol);
+  if (isNaN(t) || isNaN(tol) || tol <= 0) return null;
+  return {target: t, tol: tol};
+}
+
+function isLikelyTypo(value, tt){
+  if (!tt) return false;
+  var v = Number(value);
+  if (!isFinite(v)) return false;
+  var dev = Math.abs(v - tt.target);
+  return dev > TYPO_TOL_MULTIPLE * tt.tol && dev > TYPO_MIN_FRACTION * Math.abs(tt.target);
+}
+
 function odChartSvg(series, tt, problems){
   problems = problems || [];
   if (series.length < 2) return '<p class="muted" style="padding:40px 0;text-align:center;font-size:14px">Need at least 2 readings to chart a trend.</p>';
@@ -2699,7 +2847,13 @@ function odChartSvg(series, tt, problems){
   var vals = series.map(function(r){ return Number(r.Value); });
   var times = series.map(function(r){ return new Date(r.Timestamp).getTime(); });
 
-  var yMin = Math.min.apply(null, vals), yMax = Math.max.apply(null, vals);
+  // Scale to the believable readings only. One mistyped value would otherwise stretch the
+  // axis so far that every real reading collapses onto a flat line — the typo doesn't just
+  // show up wrong, it hides everything else.
+  var scaleVals = vals.filter(function(v){ return !isLikelyTypo(v, tt); });
+  if (!scaleVals.length) scaleVals = vals;
+
+  var yMin = Math.min.apply(null, scaleVals), yMax = Math.max.apply(null, scaleVals);
   if (tt){ yMin = Math.min(yMin, tt.target - tt.tol); yMax = Math.max(yMax, tt.target + tt.tol); }
   if (yMin === yMax){ yMin -= 0.05; yMax += 0.05; }
   var pad = (yMax - yMin) * 0.15;
@@ -2734,11 +2888,34 @@ function odChartSvg(series, tt, problems){
       '<line x1="'+padL+'" y1="'+yTarget.toFixed(1)+'" x2="'+(W-padR)+'" y2="'+yTarget.toFixed(1)+'" class="chart-target-line"/>';
   }
 
-  var pts = series.map(function(r){ return xOf(new Date(r.Timestamp).getTime()).toFixed(1) + ',' + yOf(Number(r.Value)).toFixed(1); }).join(' ');
+  // A typo sits far off the scaled axis, so pin it to the edge rather than letting it
+  // drag the trend line off the chart and break the shape of everything around it.
+  function yClamped(v){
+    var y = yOf(v);
+    return Math.max(padT + 4, Math.min(padT + plotH - 4, y));
+  }
+
+  var pts = series.map(function(r){
+    var v = Number(r.Value);
+    return xOf(new Date(r.Timestamp).getTime()).toFixed(1) + ',' + yClamped(v).toFixed(1);
+  }).join(' ');
+
   var dots = series.map(function(r){
     var val = Number(r.Value);
-    var cx = xOf(new Date(r.Timestamp).getTime()).toFixed(1), cy = yOf(val).toFixed(1);
+    var typo = isLikelyTypo(val, tt);
+    var cx = xOf(new Date(r.Timestamp).getTime()).toFixed(1), cy = yClamped(val).toFixed(1);
     var bad = r.InTol === 'N';
+
+    if (typo){
+      // Its own colour and shape — this isn't "the pipe is out of spec", it's "this
+      // number can't be right", and the two need different responses.
+      return '<rect x="'+(Number(cx)-5).toFixed(1)+'" y="'+(Number(cy)-5).toFixed(1)+'" width="10" height="10" ' +
+          'transform="rotate(45 '+cx+' '+cy+')" class="chart-dot typo">' +
+          '<title>'+esc(r.Value)+'" — looks like a typo (target '+tt.target+'") &mdash; '+
+          esc(fmtTime(r.Timestamp))+' ('+esc(r.Operator)+')</title></rect>' +
+        '<text x="'+cx+'" y="'+(Number(cy)-10).toFixed(1)+'" text-anchor="middle" class="chart-typo-label">'+esc(r.Value)+'?</text>';
+    }
+
     var cls = 'chart-dot' + (bad ? ' bad' : '');
     var devLabel = '';
     if (bad && tt){
@@ -2827,6 +3004,7 @@ function renderWoDashboard(g, serverTime){
       '<span class="spacer"></span>' +
       '<button class="btn sm" id="wodAddPipeBtn">+ Add reel</button>' +
       '<button class="btn sm" id="wodEditBtn">Edit targets</button>' +
+      '<button class="btn sm" id="wodPrintTagsBtn">Print all tags</button>' +
       '<button class="btn sm" id="wodArchiveBtn">Archive</button>' +
       '<button class="btn sm" id="wodBackBtn">Back to dashboard</button>' +
     '</div>' +
@@ -2844,6 +3022,7 @@ function renderWoDashboard(g, serverTime){
 
   E('wodBackBtn').addEventListener('click', function(){ go('dashboard'); });
   E('wodAddPipeBtn').addEventListener('click', function(){ go('addPipe', {workOrderCode: g.workOrderCode}); });
+  E('wodPrintTagsBtn').addEventListener('click', function(){ printAllTagsFor(g.workOrderCode, this); });
   E('wodArchiveBtn').addEventListener('click', function(){
     // Archiving from here removes what you're looking at, so go somewhere that still exists.
     archiveWorkOrder(g.workOrderCode, (g.activePipes || []).length, function(){ go('dashboard'); });
@@ -3147,7 +3326,7 @@ function rpTimeSourceCell(r){
   return '<span class="flag" title="Operator changed the time on this reading">&#9888; back-dated'+esc(detail)+'</span>';
 }
 
-function rpReadingsTableHtml(readings, sec){
+function rpReadingsTableHtml(readings, sec, wo){
   var rows = readings.filter(function(r){ return r.Section === sec; })
     .sort(function(a,b){ return new Date(a.Timestamp) - new Date(b.Timestamp); });
   if (!rows.length) return '<p class="muted">No readings logged.</p>';
@@ -3164,8 +3343,12 @@ function rpReadingsTableHtml(readings, sec){
     rows.map(function(r){
       var tol = r.InTol === true || r.InTol === 'TRUE' ? '<span class="ok">yes</span>'
               : (r.InTol === false || r.InTol === 'FALSE') ? '<span class="flag">NO</span>' : '<span class="muted">—</span>';
+      // Shown, never hidden — a suspected typo is still a thing somebody typed, and the
+      // controller is the one who decides whether it was.
+      var typo = isLikelyTypo(r.Value, targetTolFor(wo, sec, r.Type));
+      if (typo) tol = '<span class="suspect" title="Too far out to be a real measurement">&#9888; typo?</span>';
       return '<tr><td class="l">'+esc(rpShortTime(r.Timestamp))+'</td><td class="l">'+esc(r.Operator)+'</td>' +
-        '<td>'+esc(r.Type)+'</td><td class="num">'+esc(r.Value)+'</td>' +
+        '<td>'+esc(r.Type)+'</td><td class="num'+(typo?' suspect':'')+'">'+esc(r.Value)+'</td>' +
         '<td class="num">'+(r.Footage===''||r.Footage===undefined?'—':esc(r.Footage))+'</td><td>'+tol+'</td>' +
         '<td class="l">'+rpTimeSourceCell(r)+'</td></tr>';
     }).join('') + '</tbody></table>' + banner;
@@ -3257,11 +3440,22 @@ function rpSectionDetailHtml(data, sec){
     .sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); });
   var material = (data.materialUsage || []).filter(function(m){ return m.Section === sec; });
 
+  // Min/max/average are only meaningful over believable readings — a single mistyped
+  // value would otherwise be reported as this reel's genuine maximum.
+  var realVals = vals.filter(function(v){ return !isLikelyTypo(v, tt); });
+  var typoCount = vals.length - realVals.length;
+  if (!realVals.length) realVals = vals;
+
   var odBlock = series.length
-    ? '<div class="kpis"><div class="kpi"><b>OD readings</b><span>'+series.length+'</span></div>' +
-      '<div class="kpi"><b>Min</b><span>'+Math.min.apply(null,vals)+'"</span></div>' +
-      '<div class="kpi"><b>Max</b><span>'+Math.max.apply(null,vals)+'"</span></div>' +
-      '<div class="kpi"><b>Avg</b><span>'+round4(vals.reduce(function(a,b){return a+b;},0)/vals.length)+'"</span></div></div>' +
+    ? '<div class="kpis"><div class="kpi"><b>OD readings</b><span>'+series.length+'</span>' +
+        (typoCount ? '<i class="suspect">'+typoCount+' look like typos</i>' : '') + '</div>' +
+      '<div class="kpi"><b>Min</b><span>'+Math.min.apply(null,realVals)+'"</span></div>' +
+      '<div class="kpi"><b>Max</b><span>'+Math.max.apply(null,realVals)+'"</span></div>' +
+      '<div class="kpi"><b>Avg</b><span>'+round4(realVals.reduce(function(a,b){return a+b;},0)/realVals.length)+'"</span></div></div>' +
+      (typoCount ? '<p class="muted" style="font-size:10.5px;margin:4px 0 0"><span class="suspect">&#9888;</span> '+
+        typoCount+' reading'+(typoCount===1?' is':'s are')+' too far out to be a real measurement, so '+
+        (typoCount===1?'it is':'they are')+' left out of min/max/average and out of the chart&rsquo;s scale. '+
+        'They are still listed below.</p>' : '') +
       (tt ? '<div class="muted" style="font-size:10.5px;margin:6px 0">Shaded band = target '+tt.target+'" &plusmn; '+tt.tol+'" &middot; red labels show deviation, &#9888; marks a reported problem</div>' : '') +
       odChartSvg(series, tt, chartProblems)
     : '<p class="muted">No OD readings logged for this section.</p>';
@@ -3269,7 +3463,7 @@ function rpSectionDetailHtml(data, sec){
   return '<section class="card rp-sec">' +
     '<h2>'+sec+' &mdash; measurements</h2>' +
     odBlock +
-    '<h3 style="margin-top:14px">All readings</h3>' + rpReadingsTableHtml(data.readings, sec) +
+    '<h3 style="margin-top:14px">All readings</h3>' + rpReadingsTableHtml(data.readings, sec, wo) +
     (sec !== 'Braidline'
       ? '<h3 style="margin-top:14px">Wall thickness ('+pointCount(sec)+'-point)</h3>' +
         (checks.length ? checksTableHtml(checks) + rpThicknessPointsHtml(sec, checks)
