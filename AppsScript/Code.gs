@@ -219,7 +219,7 @@ var PUBLIC_ACTIONS = ['login', 'qrLogin'];
 // Bumped whenever Code.gs changes in a way that matters. Returned by ping and shown in
 // the site's header, because "is the backend I just edited actually deployed?" is
 // otherwise unanswerable from the outside — saving the editor does not publish it.
-var BUILD = '2026-10-06.1';
+var BUILD = '2026-10-06.2';
 
 var TIME_DRIFT_TOLERANCE_MIN = 5;
 
