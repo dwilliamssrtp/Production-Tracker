@@ -219,7 +219,7 @@ var PUBLIC_ACTIONS = ['login', 'qrLogin'];
 // Bumped whenever Code.gs changes in a way that matters. Returned by ping and shown in
 // the site's header, because "is the backend I just edited actually deployed?" is
 // otherwise unanswerable from the outside — saving the editor does not publish it.
-var BUILD = '2026-10-06.2';
+var BUILD = '2026-10-06.3';
 
 var TIME_DRIFT_TOLERANCE_MIN = 5;
 
@@ -475,12 +475,19 @@ var _sheetHandles = {};    // Sheet objects by name
 var _lastRowMemo = {};     // getLastRow() results by sheet name
 
 function _memoReset_() {
-  _sheetMemo = {};
-  _lastRowMemo = {};
+  _memoResetData_();
   // Handles are reset too: Apps Script can reuse a warm JS context between separate web
   // app invocations, and a handle carried over from a previous one is not safe to trust.
   _ssHandle = null;
   _sheetHandles = {};
+}
+
+// Forgets cached row data but keeps the sheet handles. Used when re-reading is needed
+// mid-request (after taking the write lock) — a handle is only a reference to the sheet,
+// it carries no row data, so dropping it there would just buy back a lookup for nothing.
+function _memoResetData_() {
+  _sheetMemo = {};
+  _lastRowMemo = {};
 }
 function _memoDrop_(sheetName) {
   delete _sheetMemo[sheetName];
@@ -853,15 +860,44 @@ function dropCachedSessionsFor_(accountId) {
 // Drops expired session rows so the sheet doesn't grow without bound (every scan of a
 // tag mints one). Called opportunistically from handleLogin_/handleQrLogin_ — those
 // already hold the script lock and already pay for a Sessions read.
-function pruneSessions_() {
+/* Only worth doing in bulk. Pruning ran on every single sign-in, deleting expired rows
+ * one at a time while holding the global write lock — so every tag scan on the floor
+ * stalled everyone else's saves, and got worse the longer the app ran, because more
+ * sessions had expired since the last clean. That made a routine scan one of the most
+ * expensive things the backend did.
+ *
+ * Now it waits until there's a worthwhile batch, and removes consecutive rows in one
+ * call each instead of one call per row. Sessions are appended in time order and expire
+ * on fixed lifetimes, so the expired ones sit in long runs — in practice a whole shift's
+ * worth comes out in one or two calls rather than sixty.
+ */
+var SESSION_PRUNE_THRESHOLD = 40;
+
+function pruneSessions_(force) {
   var sheet = getSheet_(SHEETS.SESSIONS);
   var rows = sheetToObjects_(SHEETS.SESSIONS);
   var now = Date.now();
   var stale = rows.filter(function (r) { return new Date(r.ExpiresAt).getTime() < now; });
-  // Delete bottom-up so earlier deletions don't shift the rows still to be removed.
-  stale.sort(function (a, b) { return b._row - a._row; }).forEach(function (r) { sheet.deleteRow(r._row); });
+  if (!stale.length) return 0;
+  // Below the threshold the rows are cheap to carry and not worth stalling a sign-in for.
+  if (!force && stale.length < SESSION_PRUNE_THRESHOLD) return 0;
+
+  // Walk the doomed rows from the bottom up, deleting each consecutive run in one call.
+  // Bottom-up so deletions don't shift the rows still queued behind them.
+  var nums = stale.map(function (r) { return r._row; }).sort(function (a, b) { return b - a; });
+  var removed = 0;
+  var i = 0;
+  while (i < nums.length) {
+    var top = nums[i];
+    var j = i;
+    while (j + 1 < nums.length && nums[j + 1] === nums[j] - 1) j++;
+    var bottom = nums[j];
+    sheet.deleteRows(bottom, top - bottom + 1);
+    removed += top - bottom + 1;
+    i = j + 1;
+  }
   _memoDrop_(SHEETS.SESSIONS);
-  return stale.length;
+  return removed;
 }
 
 function revokeSession_(token) {
@@ -1068,18 +1104,33 @@ function doPost(e) {
     var action = body.action;
     var result;
     var lock = LockService.getScriptLock();
+
+    // login/qrLogin are how a session is obtained, so they run before the auth gate.
+    // They write session rows, so they keep the lock.
+    if (PUBLIC_ACTIONS.indexOf(action) >= 0) {
+      lock.waitLock(15000);
+      try {
+        result = (action === 'login') ? apiLogin_(body) : apiQrLogin_(body);
+      } finally { lock.releaseLock(); }
+      return jsonOut_({ ok: true, data: result }, _t0);
+    }
+    if (action === 'logout') return jsonOut_({ ok: true, data: apiLogout_(body) }, _t0);
+
+    // Authorising reads a cached session, so it needs no lock — and doing it here means
+    // nothing below runs for a caller who isn't allowed it.
+    var acc = authorize_(action, body.token);
+
+    /* Slow work that touches nothing another writer is touching happens before the lock.
+     * The write lock is plant-wide: whoever holds it, everyone else's save waits. A photo
+     * going to Drive or a report going to Gmail is seconds of that, for work no other
+     * writer could conflict with. See preLockWork_. */
+    var pre = preLockWork_(action, body);
+
     lock.waitLock(15000);
     try {
-      // login/qrLogin are how a session is obtained, so they run before the auth gate.
-      // Everything else is denied unless ACTION_ROLES lists the caller's role.
-      if (PUBLIC_ACTIONS.indexOf(action) >= 0) {
-        if (action === 'login') result = apiLogin_(body);
-        else result = apiQrLogin_(body);
-        return jsonOut_({ ok: true, data: result }, _t0);
-      }
-      if (action === 'logout') return jsonOut_({ ok: true, data: apiLogout_(body) }, _t0);
-
-      var acc = authorize_(action, body.token);
+      // Anything read before the lock was read against pre-lock state; drop the cached rows
+      // so every read inside the lock sees what's actually there now. Handles are kept.
+      _memoResetData_();
       switch (action) {
         case 'createWorkOrder': result = apiCreateWorkOrder_(body); break;
         case 'updateWorkOrder': result = apiUpdateWorkOrder_(body); break;
@@ -1088,14 +1139,14 @@ function doPost(e) {
         case 'addReadings': result = apiAddReadings_(body); break;
         case 'addThicknessCheck': result = apiAddThicknessCheck_(body); break;
         case 'addNote': result = apiAddNote_(body); break;
-        case 'addPhoto': result = apiAddPhoto_(body); break;
+        case 'addPhoto': result = apiAddPhoto_(body, pre); break;
         case 'addMaterialUsage': result = apiAddMaterialUsage_(body); break;
         case 'addProblemReport': result = apiAddProblemReport_(body); break;
         case 'resolveProblemReport': result = apiResolveProblemReport_(body); break;
         case 'startDowntime': result = apiStartDowntime_(body); break;
         case 'endDowntime': result = apiEndDowntime_(body); break;
         case 'setSectionStatus': result = apiSetSectionStatus_(body); break;
-        case 'sendReport': result = apiSendReport_(body); break;
+        case 'sendReport': result = apiSendReport_(body, pre); break;
 
         case 'changePassword': result = apiChangePassword_(acc, body); break;
         case 'createAccount': result = apiCreateAccount_(acc, body); break;
@@ -1142,6 +1193,33 @@ function doPost(e) {
 
 // Every response carries how long the server spent on it and which build answered, so
 // "it feels slow" can be checked against a number instead of guessed at.
+/* Work done before the write lock is taken.
+ *
+ * Only for operations whose slow part is external (Drive, Gmail) and touches no sheet
+ * another writer could be changing. Everything that reads or writes the Sheet still
+ * happens under the lock.
+ *
+ * The trade: if the lock then times out, the file is already in Drive or the mail is
+ * already sent, and the row recording it isn't written. That's an orphaned file or an
+ * email the log doesn't show — annoying, but far better than the alternative it replaces,
+ * where one person's photo upload could push everyone else past the lock timeout and
+ * fail their saves outright. It also becomes much less likely, because this is the change
+ * that stops the lock being held that long in the first place.
+ */
+function preLockWork_(action, body) {
+  if (action === 'addPhoto' && body.imageBase64) {
+    var pipeCode = String(body.pipeCode || '').trim();
+    // Validate before uploading, so a bad reel code doesn't leave a file behind. This is
+    // a read, so it's safe outside the lock.
+    if (!findRowByKey_(SHEETS.PIPES, 'PipeCode', pipeCode)) throw new Error('Reel not found: ' + pipeCode);
+    return { uploaded: uploadPhotoToDrive_(pipeCode, body.imageBase64, body.filename, body.mimeType) };
+  }
+  if (action === 'sendReport') {
+    return sendReportEmail_(body);
+  }
+  return null;
+}
+
 function jsonOut_(obj, t0) {
   if (t0) { obj.ms = Date.now() - t0; obj.build = BUILD; }
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
@@ -1491,12 +1569,18 @@ function uploadPhotoToDrive_(pipeCode, imageBase64, filename, mimeType) {
   return { url: file.getUrl(), fileId: file.getId() };
 }
 
-function apiAddPhoto_(body) {
+// `pre` is the already-uploaded file when doPost did the Drive work before taking the
+// write lock, which is the normal path — see preLockWork_.
+function apiAddPhoto_(body, pre) {
   var pipeCode = String(body.pipeCode || '').trim();
-  if (!findRowByKey_(SHEETS.PIPES, 'PipeCode', pipeCode)) throw new Error('Reel not found: ' + pipeCode);
+  // preLockWork_ already proved the reel exists before spending a Drive upload on it, so
+  // only check here when the upload didn't come from there.
+  if (!(pre && pre.uploaded) && !findRowByKey_(SHEETS.PIPES, 'PipeCode', pipeCode)) {
+    throw new Error('Reel not found: ' + pipeCode);
+  }
   if (!body.imageBase64) throw new Error('imageBase64 is required.');
 
-  var uploaded = uploadPhotoToDrive_(pipeCode, body.imageBase64, body.filename, body.mimeType);
+  var uploaded = (pre && pre.uploaded) || uploadPhotoToDrive_(pipeCode, body.imageBase64, body.filename, body.mimeType);
   var row = {
     RowId: newId_(), PipeCode: pipeCode, Section: body.section || '', Timestamp: body.timestamp || nowIso_(),
     Operator: body.operator || '', Caption: body.caption || '',
@@ -1811,19 +1895,28 @@ function apiDashboard_() {
 
 // ---------- email report ----------
 
-function apiSendReport_(body) {
+// Builds and sends the report. Run before the write lock is taken (see preLockWork_),
+// because reading the reel, rendering the HTML and handing it to Gmail is seconds of work
+// that touches nothing anyone else is writing to.
+function sendReportEmail_(body) {
   var pipeCode = String(body.pipeCode || '').trim();
   var data = apiGetPipe_(pipeCode);
   var to = (body.emailTo || data.workOrder.EmailTo || DEFAULT_EMAIL_TO);
-  var html = buildReportHtml_(data);
   MailApp.sendEmail({
     to: to,
     subject: 'SRTP Production Report — Reel ' + pipeCode + ' (' + data.pipe.OverallStatus + ')',
-    htmlBody: html
+    htmlBody: buildReportHtml_(data)
   });
-  appendRow_(SHEETS.EMAILLOG, { RowId: newId_(), PipeCode: pipeCode, SentAt: nowIso_(), SentTo: to, Trigger: body.trigger || 'manual' });
-  updateRowByKey_(SHEETS.PIPES, 'PipeCode', pipeCode, { LastEmailAt: nowIso_() });
   return { sentTo: to };
+}
+
+// All that's left under the lock: record that it went.
+function apiSendReport_(body, pre) {
+  var pipeCode = String(body.pipeCode || '').trim();
+  var sent = pre || sendReportEmail_(body);
+  appendRow_(SHEETS.EMAILLOG, { RowId: newId_(), PipeCode: pipeCode, SentAt: nowIso_(), SentTo: sent.sentTo, Trigger: body.trigger || 'manual' });
+  updateRowByKey_(SHEETS.PIPES, 'PipeCode', pipeCode, { LastEmailAt: nowIso_() });
+  return { sentTo: sent.sentTo };
 }
 
 function stats_(values) {

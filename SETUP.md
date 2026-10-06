@@ -1,6 +1,6 @@
 # SRTP Production Tracker — setup
 
-**Already deployed once and just need to push an update?** Skip to [Updating later](#updating-later). This round needs a `Code.gs` redeploy plus re-hosting `index.html`, and a **re-run of `setup()`** to add the new tooling columns. Append-only, no fresh Sheet needed and no data migration. Build for this round is `2026-10-06.2` — check it in the header afterwards.
+**Already deployed once and just need to push an update?** Skip to [Updating later](#updating-later). This round needs a `Code.gs` redeploy plus re-hosting `index.html`, and a **re-run of `setup()`** to add the new tooling columns. Append-only, no fresh Sheet needed and no data migration. Build for this round is `2026-10-06.3` — check it in the header afterwards.
 
 Two pieces:
 - **Backend**: a Google Sheet + Apps Script (`AppsScript/Code.gs`) — this is the database, the JSON API, photo storage (Google Drive), the email sender, and the login/permission check.
@@ -42,6 +42,8 @@ Note on the deployment setting: "Who has access: **Anyone**" only means Google w
 - The **dashboard and TV view are grouped by work order**, showing every active pipe underneath — so you can see pipe R1 on Braidline while R2 is still on Baseline, side by side, plus a progress bar toward the work order's total project length (summed from each pipe's finished/Coverline length).
 
 ## What's new this round
+
+- **Holds up much better with several people using it at once.** Saving is deliberately one-at-a-time across the plant (that's what stops two operators overwriting each other), so anything slow that happens while saving makes everyone else wait. Three things were doing that: a cleanup job that ran on **every QR tag scan** and got slower the longer the app had been running; photo uploads, which waited on Google Drive; and emailing a report, which waited on Gmail. The cleanup now runs only when there's a real backlog and clears it in one go, and the Drive and Gmail waits were moved outside the one-at-a-time section. A tag scan with a shift's backlog went from 75 service calls to 16, and the time a photo upload blocks other people's saves dropped from 14 calls to 5. Your own wait is unchanged on readings and notes, and one call longer on photos and reports.
 
 - **Recipe-card tooling is now recorded.** Baseline setup takes **Tip size**, **Die size**, **Coated? (Y/N)**, **Concentricity gap**, **Sizer ID** and **Rear gasket hole size**; Coverline takes the first four (its card has no sizer). They show as a Tooling block — above the extruder settings, since that is what gets set up first — on the Setup Reference tab, on the Reports page and in the emailed report. Note the two recipe cards print these in opposite orders — Baseline reads `Tip / Die Size / Coated`, Coverline reads `Die Size / Tip / Coated` — so each field is labelled individually here rather than as the combined slash field, and you enter them by name. **Sizer ID is a text field** so it holds the ring count as written: `2.243" (27 rings)`.
 
