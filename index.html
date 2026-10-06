@@ -594,8 +594,20 @@ function toast(msg, isErr){
   clearTimeout(t._h);
   t._h = setTimeout(function(){ t.style.display='none'; }, 3500);
 }
+/* Who gets credited for an entry.
+ *
+ * Remembered per browser, so a reel's worth of readings doesn't mean retyping a name
+ * twenty times. That's fine on someone's own phone and wrong on a shared tablet: left
+ * alone, whoever used it last stays in the box and the next operator's readings get
+ * logged under their name. Silent misattribution undermines the point of recording an
+ * operator at all — and of flagging back-dated readings.
+ *
+ * So the name is cleared at the boundaries where the person plausibly changes: scanning
+ * a tag (that's someone picking up a reel) and signing out. Within a session it sticks.
+ */
 function getOperatorName(){ return lsGet('srtp_operator_name') || ''; }
 function setOperatorName(v){ lsSet('srtp_operator_name', v || ''); }
+function clearOperatorName(){ lsDel('srtp_operator_name'); }
 
 function pointLabel(section, i){
   if (section === 'Coverline'){
@@ -833,6 +845,8 @@ function bindLogin(){
 function logout(){
   var token = AUTH.token;
   clearAuth();
+  // Next person on this device starts with an empty name rather than inheriting one.
+  clearOperatorName();
   STATE.loginError = '';
   STATE.operatorKey = ''; STATE.accounts = null;
   STATE.pipe = null; STATE.workOrder = null; STATE.pipeCode = ''; STATE.workOrderCode = '';
@@ -849,6 +863,9 @@ function logout(){
 function tryQrLogin(key, pipeCode){
   var app = E('app');
   app.innerHTML = '<p class="muted" style="text-align:center;margin-top:8vh">Signing in from reel tag&hellip;</p>';
+  // A scanned tag means someone is picking up a reel, and it may not be whoever used
+  // this tablet last — start them with a blank name rather than the previous operator's.
+  clearOperatorName();
   return apiPost('qrLogin', {key: key})
     .then(function(res){
       setAuth(res.token, res.account);
