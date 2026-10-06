@@ -84,7 +84,14 @@ var HEADERS = {
 
     // Braid yarns (appended per the append-only rule). The longitudinals and the cross
     // braid can run different yarns, so they're recorded separately.
-    'BR_LongsMaterial', 'BR_XbraidMaterial'
+    'BR_LongsMaterial', 'BR_XbraidMaterial',
+
+    // Tooling from the recipe cards (appended per the append-only rule). The two cards
+    // print tip and die in opposite orders, so these are named explicitly rather than
+    // stored as the combined slash field the paper shows. Sizer ID holds its ring count
+    // as written ("2.243" (27 rings)"), so it's text, not a number.
+    'BL_TipSize', 'BL_DieSize', 'BL_Coated', 'BL_ConcentricityGap', 'BL_SizerID', 'BL_RearGasketHole',
+    'CV_TipSize', 'CV_DieSize', 'CV_Coated', 'CV_ConcentricityGap'
   ],
   Pipes: [
     'PipeCode', 'WorkOrderCode', 'CreatedAt', 'CreatedBy',
@@ -212,7 +219,7 @@ var PUBLIC_ACTIONS = ['login', 'qrLogin'];
 // Bumped whenever Code.gs changes in a way that matters. Returned by ping and shown in
 // the site's header, because "is the backend I just edited actually deployed?" is
 // otherwise unanswerable from the outside — saving the editor does not publish it.
-var BUILD = '2026-10-05.1';
+var BUILD = '2026-10-06.1';
 
 var TIME_DRIFT_TOLERANCE_MIN = 5;
 
@@ -255,11 +262,17 @@ var WO_FIELD_MAP = {
   cvTZ1: 'CV_TZ1', cvTZ2: 'CV_TZ2', cvTZ3: 'CV_TZ3', cvTZ4: 'CV_TZ4', cvTZ5: 'CV_TZ5', cvTClamp: 'CV_TClamp',
   cvDieBody: 'CV_DieBody', cvDieManifold: 'CV_DieManifold', cvDieRetainer: 'CV_DieRetainer', cvDieFlange: 'CV_DieFlange',
 
+  blTipSize: 'BL_TipSize', blDieSize: 'BL_DieSize', blCoated: 'BL_Coated',
+  blConcentricityGap: 'BL_ConcentricityGap', blSizerID: 'BL_SizerID', blRearGasketHole: 'BL_RearGasketHole',
+  cvTipSize: 'CV_TipSize', cvDieSize: 'CV_DieSize', cvCoated: 'CV_Coated', cvConcentricityGap: 'CV_ConcentricityGap',
+
   blLineSpeed: 'BL_LineSpeed', brLineSpeed: 'BR_LineSpeed', cvLineSpeed: 'CV_LineSpeed'
 };
 // The subset of WO_FIELD_MAP keys that are free text rather than numeric.
 var WO_TEXT_KEYS = ['customer', 'productCode', 'pipeSize', 'emailTo', 'blNotes', 'brNotes', 'cvNotes',
-  'blBackerMaterial', 'blBondMaterial', 'blLinerMaterial', 'brLongsMaterial', 'brXbraidMaterial'];
+  'blBackerMaterial', 'blBondMaterial', 'blLinerMaterial', 'brLongsMaterial', 'brXbraidMaterial',
+  // Y/N, and a sizer ID written as '2.243" (27 rings)' — neither survives numOrBlank_.
+  'blCoated', 'cvCoated', 'blSizerID'];
 
 function valueForField_(body, key) {
   var v = body[key];
@@ -1918,6 +1931,16 @@ function buildReportHtml_(data) {
     if (zones.length) parts.push('Zones ' + zones.map(esc).join('/'));
     var die = ['DieBody','DieManifold','DieRetainer','DieFlange'].map(function(z){ return wo[prefix+'_'+z]; }).filter(function(v){ return v!==''; });
     if (die.length) parts.push('Die ' + die.map(esc).join('/'));
+    // Tooling. Labelled individually rather than as the recipe card's slash field, since
+    // the Baseline and Coverline cards print tip and die the opposite way round.
+    if (wo[prefix + '_TipSize'] !== '') parts.push('Tip ' + esc(wo[prefix + '_TipSize']) + '"');
+    if (wo[prefix + '_DieSize'] !== '') parts.push('Die size ' + esc(wo[prefix + '_DieSize']) + '"');
+    if (wo[prefix + '_Coated'] !== '') parts.push('Coated ' + esc(wo[prefix + '_Coated']));
+    if (wo[prefix + '_ConcentricityGap'] !== '') parts.push('Conc. gap ' + esc(wo[prefix + '_ConcentricityGap']) + '"');
+    if (prefix === 'BL') {
+      if (wo.BL_SizerID !== '') parts.push('Sizer ID ' + esc(wo.BL_SizerID));
+      if (wo.BL_RearGasketHole !== '') parts.push('Rear gasket ' + esc(wo.BL_RearGasketHole) + '"');
+    }
     if (!parts.length) return '';
     return '<div style="color:#898781;font-size:11px;margin-bottom:8px">Process ref — ' + parts.join(' &nbsp;·&nbsp; ') + '</div>';
   }

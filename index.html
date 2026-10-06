@@ -1235,7 +1235,33 @@ function processFieldsHtml(p, wo, withMaterial){
       '<input id="f_'+p+'DieManifold" placeholder="Manifold" value="'+g('DieManifold')+'">' +
       '<input id="f_'+p+'DieRetainer" placeholder="Retainer" value="'+g('DieRetainer')+'">' +
       '<input id="f_'+p+'DieFlange" placeholder="Flange" value="'+g('DieFlange')+'">' +
-    '</div>';
+    '</div>' +
+
+    /* Tooling, from the recipe card.
+     *
+     * The two cards print these in opposite orders — Baseline reads "Tip / Die Size /
+     * Coated", Coverline reads "Die Size / Tip / Coated" — so each one is labelled
+     * explicitly here rather than as a combined slash field. Entering 2.828 under "Die"
+     * because that's where it sat on the card is exactly the mistake worth designing out.
+     *
+     * Sizer ID and rear gasket are Baseline only; the Coverline card has no sizer. */
+    '<div class="fld" style="margin-top:8px"><label>Tooling (from recipe card)</label></div>' +
+    '<div class="grid g4">' +
+      '<div class="fld"><label>Tip size (in)</label><input id="f_'+p+'TipSize" value="'+g('TipSize')+'"></div>' +
+      '<div class="fld"><label>Die size (in)</label><input id="f_'+p+'DieSize" value="'+g('DieSize')+'"></div>' +
+      '<div class="fld"><label>Coated?</label><select id="f_'+p+'Coated">' +
+        ['','Y','N'].map(function(v){
+          return '<option value="'+v+'"'+(String(wo?wo[P+'_Coated']:'')===v?' selected':'')+'>'+(v||'—')+'</option>';
+        }).join('') +
+      '</select></div>' +
+      '<div class="fld"><label>Concentricity gap (in)</label><input id="f_'+p+'ConcentricityGap" value="'+g('ConcentricityGap')+'"></div>' +
+    '</div>' +
+    (P === 'BL'
+      ? '<div class="grid g2" style="margin-top:8px">' +
+          '<div class="fld"><label>Sizer ID</label><input id="f_'+p+'SizerID" value="'+g('SizerID')+'" placeholder="e.g. 2.243&quot; (27 rings)"></div>' +
+          '<div class="fld"><label>Rear gasket hole size (in)</label><input id="f_'+p+'RearGasketHole" value="'+g('RearGasketHole')+'"></div>' +
+        '</div>'
+      : '');
 }
 
 // Baseline's recipe card has two more extruders beyond the Backer (Co/Bonding, Co/Inner
@@ -1331,7 +1357,10 @@ function viewController(isNew){
 }
 
 function collectProcessFields(p, body){
-  ['BackerMaterial','ChillerTemp','VacuumLevel','BackerRPM','TZ1','TZ2','TZ3','TZ4','TZ5','TClamp','DieBody','DieManifold','DieRetainer','DieFlange']
+  ['BackerMaterial','ChillerTemp','VacuumLevel','BackerRPM','TZ1','TZ2','TZ3','TZ4','TZ5','TClamp',
+   'DieBody','DieManifold','DieRetainer','DieFlange',
+   // Coverline has no sizer, so its two fields simply aren't in the DOM — the guard below skips them.
+   'TipSize','DieSize','Coated','ConcentricityGap','SizerID','RearGasketHole']
     .forEach(function(field){ var el = E('f_'+p+field); if (el) body[p+field] = el.value; });
 }
 
@@ -1735,10 +1764,13 @@ function processRefHtml(prefix, wo){
   var chiller = wo[prefix+'_ChillerTemp'], vacuum = wo[prefix+'_VacuumLevel'], rpm = wo[prefix+'_BackerRPM'];
   var zoneKeys = ['TZ1','TZ2','TZ3','TZ4','TZ5','TClamp'], zoneLabels = ['Zone 1','Zone 2','Zone 3','Zone 4','Zone 5','Clamp'];
   var dieKeys = ['DieBody','DieManifold','DieRetainer','DieFlange'], dieLabels = ['Body','Manifold','Retainer','Flange'];
+  // Sizer ID and rear gasket are Baseline-only — the Coverline recipe card has no sizer.
+  var toolKeys = ['TipSize','DieSize','Coated','ConcentricityGap']
+    .concat(prefix === 'BL' ? ['SizerID','RearGasketHole'] : []);
+  var has = function(k){ return wo[prefix+'_'+k]!=='' && wo[prefix+'_'+k]!==undefined; };
 
   var hasAny = material || chiller || vacuum || rpm ||
-    zoneKeys.some(function(z){ return wo[prefix+'_'+z]!==''&&wo[prefix+'_'+z]!==undefined; }) ||
-    dieKeys.some(function(d){ return wo[prefix+'_'+d]!==''&&wo[prefix+'_'+d]!==undefined; });
+    zoneKeys.some(has) || dieKeys.some(has) || toolKeys.some(has);
   if (!hasAny) return '';
 
   var blHeading = 'Backer Extruder Size: '+BASELINE_EXTRUDER_SIZE.backer;
@@ -1757,10 +1789,22 @@ function processRefHtml(prefix, wo){
       }).join('') + '</div>';
   }
 
-  if (dieKeys.some(function(d){ return wo[prefix+'_'+d]!==''&&wo[prefix+'_'+d]!==undefined; })){
+  if (dieKeys.some(has)){
     html += '<div class="fld" style="margin-top:8px"><label>Die temps (&deg;F)</label></div>' +
       '<div class="grid g4">' + dieLabels.map(function(lbl,i){
         return '<div class="kpi"><b>'+lbl+'</b><span>'+fmtTol(wo[prefix+'_'+dieKeys[i]])+'</span></div>';
+      }).join('') + '</div>';
+  }
+
+  if (toolKeys.some(has)){
+    var toolLabels = {TipSize:'Tip size', DieSize:'Die size', Coated:'Coated?',
+                      ConcentricityGap:'Concentricity gap', SizerID:'Sizer ID', RearGasketHole:'Rear gasket hole'};
+    html += '<div class="fld" style="margin-top:8px"><label>Tooling</label></div>' +
+      '<div class="grid g4">' + toolKeys.map(function(k){
+        // Sizer ID carries its ring count as text, so it needs to wrap rather than sit
+        // on one line at the KPI font size.
+        var small = (k === 'SizerID') ? ' style="font-size:13px"' : '';
+        return '<div class="kpi"><b>'+toolLabels[k]+'</b><span'+small+'>'+fmtTol(wo[prefix+'_'+k])+'</span></div>';
       }).join('') + '</div>';
   }
 

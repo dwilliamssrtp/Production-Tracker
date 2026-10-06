@@ -1,6 +1,6 @@
 # SRTP Production Tracker — setup
 
-**Already deployed once and just need to push an update?** Skip to [Updating later](#updating-later). This round needs a `Code.gs` redeploy plus re-hosting `index.html`, and a **re-run of `setup()`** to add the new columns and backfill each reel's per-section footage. Append-only, no fresh Sheet needed and no data migration.
+**Already deployed once and just need to push an update?** Skip to [Updating later](#updating-later). This round needs a `Code.gs` redeploy plus re-hosting `index.html`, and a **re-run of `setup()`** to add the new tooling columns. Append-only, no fresh Sheet needed and no data migration. Build for this round is `2026-10-06.1` — check it in the header afterwards.
 
 Two pieces:
 - **Backend**: a Google Sheet + Apps Script (`AppsScript/Code.gs`) — this is the database, the JSON API, photo storage (Google Drive), the email sender, and the login/permission check.
@@ -42,6 +42,8 @@ Note on the deployment setting: "Who has access: **Anyone**" only means Google w
 - The **dashboard and TV view are grouped by work order**, showing every active pipe underneath — so you can see pipe R1 on Braidline while R2 is still on Baseline, side by side, plus a progress bar toward the work order's total project length (summed from each pipe's finished/Coverline length).
 
 ## What's new this round
+
+- **Recipe-card tooling is now recorded.** Baseline setup takes **Tip size**, **Die size**, **Coated? (Y/N)**, **Concentricity gap**, **Sizer ID** and **Rear gasket hole size**; Coverline takes the first four (its card has no sizer). They show as a Tooling block on the Setup Reference tab, on the Reports page and in the emailed report. Note the two recipe cards print these in opposite orders — Baseline reads `Tip / Die Size / Coated`, Coverline reads `Die Size / Tip / Coated` — so each field is labelled individually here rather than as the combined slash field, and you enter them by name. **Sizer ID is a text field** so it holds the ring count as written: `2.243" (27 rings)`.
 
 - **Every operator action is now one request instead of two.** Saving a reading, a note, a thickness check, a photo, material usage, a problem report, starting or ending downtime, marking a section complete — each used to save, then make a second request to reload the reel so the screen could redraw. An Apps Script request carries most of a second of fixed overhead before it does any work, so that doubled the wait on everything the floor does. The server now returns the reel's refreshed state with the write that changed it. A Braidline reading was the worst case at three requests (pitch, OD, reload) and is now one.
 - **The header shows the server's response time and build.** Signed in as an admin you'll see `Connected · 142ms · 2026-10-05.1`. The build string comes from `Code.gs`, so if it doesn't match what you just deployed, the deployment didn't take — see the note in [Updating later](#updating-later). This exists because "is the backend actually live, and is the server or the network the slow part?" was impossible to answer from the browser.
