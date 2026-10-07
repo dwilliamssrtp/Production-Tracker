@@ -469,6 +469,7 @@ function parseApiResponse(r){
 }
 
 function apiGet(action, params){
+  if (isSupabaseBackend()) return supaCall(action, params || {});
   params = Object.assign({}, params || {});
   if (AUTH.token) params.token = AUTH.token;
   var qs = Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
@@ -481,6 +482,7 @@ function apiGet(action, params){
   }).catch(function(err){ noteApiFailure(err); throw err; });
 }
 function apiPost(action, body){
+  if (isSupabaseBackend()) return supaCall(action, body || {}).then(function(d){ invalidateDashboard(); return d; });
   var payload = Object.assign({action: action}, body || {});
   if (AUTH.token && payload.token === undefined) payload.token = AUTH.token;
   return fetchWithTimeout(API_URL, {
@@ -501,6 +503,183 @@ function apiPost(action, body){
 // The last response envelope, kept so apiSave can read the piggybacked reel state and
 // the header can show what the server reported about itself.
 var LAST_ENVELOPE = null;
+
+/* ============================= BACKEND ADAPTER =============================
+ * The app can talk to either backend, chosen by whatever is in the API URL box: an
+ * Apps Script /exec URL, or the Supabase project URL. Everything above and below this
+ * point is unchanged — the adapter translates at the edge, so the 4,000 lines of UI
+ * never learn that the database moved.
+ *
+ * Switching back is one paste. That matters while the two run side by side: if Supabase
+ * misbehaves on the floor, the controller changes one field and the plant keeps working.
+ *
+ * The anon key is meant to ship in the page. Every table has row-level security with no
+ * policies, so it grants no table access at all — only the right to call the api_
+ * functions, each of which checks the session token and role first. It is not the
+ * service_role key, which bypasses everything and must never leave the dashboard.
+ */
+var SUPABASE_URL = 'https://rkcdylfubmupzhdcgdga.supabase.co';
+var SUPABASE_KEY = 'sb_publishable_kpZprInacerY8I4pab_c6Q_snkMD7OH';
+
+function isSupabaseBackend(){ return /supabase\.co/i.test(API_URL || ''); }
+
+// Recipe and target fields arrive as blTargetOD, brPitchTol, cvConcentricityGap … and go
+// into the work order's `spec` as BL_TargetOD, BR_PitchTol, CV_ConcentricityGap. The
+// transform is mechanical with exactly one exception, kept from the Sheet era.
+function supaSpec(body){
+  var spec = {};
+  Object.keys(body || {}).forEach(function(k){
+    var m = /^(bl|br|cv)([A-Z].*)$/.exec(k);
+    if (!m) return;
+    spec[k === 'brLongsEndsUp' ? 'BR_Longs' : (m[1].toUpperCase() + '_' + m[2])] = body[k];
+  });
+  return spec;
+}
+
+function supaNums(arr){
+  return (arr || []).map(function(v){ return (v === '' || v === null || v === undefined) ? null : Number(v); });
+}
+function supaNum(v){ return (v === '' || v === null || v === undefined) ? null : Number(v); }
+
+// action -> [function name, arguments]. Mirrors the Apps Script action names exactly, so
+// nothing that calls apiGet/apiPost had to change.
+function supaRoute(action, a){
+  var t = AUTH.token;
+  switch (action){
+    case 'ping':                   return ['api_ping', {p_token: t}];
+    case 'getPipe':                return ['api_get_pipe', {p_token: t, p_pipe_code: a.pipeCode}];
+    case 'getWorkOrderInfo':       return ['api_get_work_order_info', {p_token: t, p_code: a.code}];
+    case 'dashboard':              return ['api_dashboard', {p_token: t}];
+    case 'getOperatorKey':         return ['api_get_operator_key', {p_token: t}];
+    case 'listAccounts':           return ['api_list_accounts', {p_token: t}];
+    case 'listArchive':            return ['api_list_archive', {p_token: t}];
+    case 'adminPanel':             return ['api_admin_panel', {p_token: t}];
+    case 'workOrderDeletePreview': return ['api_work_order_delete_preview', {p_token: t, p_code: a.code}];
+
+    case 'login':    return ['api_login',    {p_username: a.username, p_password: a.password}];
+    case 'qrLogin':  return ['api_qr_login', {p_key: a.key}];
+    case 'logout':   return ['api_logout',   {p_token: a.token || t}];
+
+    case 'createWorkOrder': return ['api_create_work_order', {
+      p_token: t, p_code: a.code, p_created_by: a.createdBy || '',
+      p_customer: a.customer || '', p_product_code: a.productCode || '',
+      p_pipe_size: a.pipeSize || '', p_email_to: a.emailTo || '',
+      p_project_length: supaNum(a.projectLength), p_spec: supaSpec(a)}];
+    case 'updateWorkOrder': return ['api_update_work_order', {
+      p_token: t, p_code: a.code,
+      p_customer: a.customer, p_product_code: a.productCode,
+      p_pipe_size: a.pipeSize, p_email_to: a.emailTo,
+      p_project_length: supaNum(a.projectLength), p_spec: supaSpec(a)}];
+    case 'createPipe': return ['api_create_pipe', {
+      p_token: t, p_pipe_code: a.pipeCode, p_work_order_code: a.workOrderCode, p_created_by: a.createdBy || ''}];
+
+    case 'addReadings': return ['api_add_readings', {
+      p_token: t, p_pipe_code: a.pipeCode, p_section: a.section, p_operator: a.operator || '',
+      p_timestamp: a.timestamp, p_time_source: a.timeSource || 'Device',
+      p_readings: (a.readings || []).map(function(r){
+        return {type: r.type, value: Number(r.value), footage: (r.footage === '' ? null : r.footage)};
+      })}];
+    case 'addThicknessCheck': return ['api_add_thickness_check', {
+      p_token: t, p_pipe_code: a.pipeCode, p_section: a.section, p_position: a.position || '',
+      p_operator: a.operator || '', p_timestamp: a.timestamp,
+      p_od: supaNum(a.od), p_points: supaNums(a.points)}];
+    case 'addNote': return ['api_add_note', {
+      p_token: t, p_pipe_code: a.pipeCode, p_section: a.section || '', p_text: a.text, p_operator: a.operator || ''}];
+    case 'addPhoto': return ['api_add_photo', {
+      p_token: t, p_pipe_code: a.pipeCode, p_section: a.section || '', p_caption: a.caption || '',
+      p_operator: a.operator || '', p_storage_path: a.storagePath || '',
+      p_problem_report_id: a.problemReportId || null}];
+    case 'addMaterialUsage': return ['api_add_material_usage', {
+      p_token: t, p_pipe_code: a.pipeCode, p_section: a.section || '', p_operator: a.operator || '',
+      p_material: a.material || '', p_lot_number: a.lotNumber || '',
+      p_start_weight: supaNum(a.startWeight), p_end_weight: supaNum(a.endWeight)}];
+    case 'addProblemReport': return ['api_add_problem_report', {
+      p_token: t, p_pipe_code: a.pipeCode, p_section: a.section || '', p_operator: a.operator || '',
+      p_footage_marker: supaNum(a.footageMarker), p_description: a.description, p_timestamp: a.timestamp}];
+    case 'resolveProblemReport': return ['api_resolve_problem_report', {
+      p_token: t, p_report_id: a.reportId, p_resolved_by: a.resolvedBy || '',
+      p_resolution_notes: a.resolutionNotes || ''}];
+
+    case 'startDowntime': return ['api_start_downtime', {
+      p_token: t, p_pipe_code: a.pipeCode, p_section: a.section,
+      p_reason_code: a.reasonCode || '', p_notes: a.notes || '', p_operator: a.operator || ''}];
+    case 'endDowntime': return ['api_end_downtime', {
+      p_token: t, p_pipe_code: a.pipeCode, p_section: a.section, p_operator: a.operator || ''}];
+    case 'setSectionStatus': return ['api_set_section_status', {
+      p_token: t, p_pipe_code: a.pipeCode, p_section: a.section, p_status: a.status,
+      p_actual_length: supaNum(a.actualLength)}];
+
+    case 'requestVoid': return ['api_request_void', {
+      p_token: t, p_kind: a.kind, p_row_id: a.rowId, p_reason: a.reason, p_operator: a.operator || ''}];
+    case 'resolveVoid': return ['api_resolve_void', {
+      p_token: t, p_kind: a.kind, p_row_id: a.rowId, p_approve: !!a.approve}];
+
+    case 'archiveWorkOrder':   return ['api_archive_work_order',   {p_token: t, p_code: a.code}];
+    case 'unarchiveWorkOrder': return ['api_unarchive_work_order', {p_token: t, p_code: a.code}];
+    case 'deleteWorkOrder':    return ['api_delete_work_order',    {p_token: t, p_code: a.code, p_confirm_code: a.confirmCode}];
+
+    case 'changePassword':    return ['api_change_password',     {p_token: t, p_old: a.oldPassword, p_new: a.newPassword}];
+    case 'createAccount':     return ['api_create_account',      {p_token: t, p_username: a.username, p_name: a.name, p_role: a.role, p_password: a.password}];
+    case 'updateAccount':     return ['api_update_account',      {p_token: t, p_account_id: a.accountId, p_name: a.name || null, p_role: a.role || null}];
+    case 'resetPassword':     return ['api_reset_password',      {p_token: t, p_account_id: a.accountId, p_new: a.newPassword}];
+    case 'setAccountActive':  return ['api_set_account_active',  {p_token: t, p_account_id: a.accountId, p_active: !!a.active}];
+    case 'deleteAccount':     return ['api_delete_account',      {p_token: t, p_account_id: a.accountId}];
+    case 'rotateOperatorKey': return ['api_rotate_operator_key', {p_token: t}];
+
+    default: return null;
+  }
+}
+
+function supaCall(action, args){
+  var route = supaRoute(action, args || {});
+  if (!route){
+    var unknown = new Error('This action is not available on the Supabase backend yet: ' + action);
+    unknown.appError = true;
+    return Promise.reject(unknown);
+  }
+  var started = Date.now();
+
+  return fetchWithTimeout(SUPABASE_URL + '/rest/v1/rpc/' + route[0], {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'apikey': SUPABASE_KEY,
+              'Authorization': 'Bearer ' + SUPABASE_KEY},
+    body: JSON.stringify(route[1])
+  }).then(function(r){
+    return r.text().then(function(text){
+      var j = null;
+      try { j = text ? JSON.parse(text) : null; }
+      catch (e){
+        var bad = new Error('The server returned something other than data. Check the Supabase project URL.');
+        bad.appError = true; throw bad;
+      }
+
+      if (!r.ok){
+        // Postgres raises with hint 'session_invalid' when the token is dead; everything
+        // else is a message meant for the person reading it.
+        var msg = (j && (j.message || j.error_description)) || 'Request failed';
+        if (j && (j.hint === 'session_invalid' || /not signed in/i.test(msg))){
+          clearAuth();
+          STATE.loginError = 'Your session expired — sign in again.';
+          go('login');
+          var ex = new Error('Session expired'); ex.sessionExpired = true; throw ex;
+        }
+        var err = new Error(msg); err.appError = true; throw err;
+      }
+
+      // Supabase doesn't report its own execution time, so the header shows the round
+      // trip instead. Different number, same purpose: is it the server or the network?
+      noteApiSuccess({ms: Date.now() - started, build: 'supabase'});
+
+      // Writes come back as { data, pipe } so one request both saves and refreshes.
+      if (j && typeof j === 'object' && !Array.isArray(j) && j.pipe !== undefined && j.data !== undefined){
+        LAST_ENVELOPE = {ok: true, data: j.data, pipe: j.pipe};
+        return j.data;
+      }
+      LAST_ENVELOPE = {ok: true, data: j};
+      return j;
+    });
+  }).catch(function(err){ noteApiFailure(err); throw err; });
+}
 
 /* A write that also refreshes the reel, in one request.
  *
