@@ -328,12 +328,21 @@ declare
 begin
   perform _require(p_token, array['Admin']);
 
-  with wo as (
-    select * from work_orders where not archived
-  ),
-  pipe_rows as (
-    select p.*, w.code as wo_code, w.customer, w.product_code, w.project_length, w as wo_row
-    from pipes p join wo w on w.code = p.work_order_code
+  with pipe_rows as (
+    -- The pipe and work order rows are carried whole (`p as pipe_row`) rather than
+    -- expanded with p.*, because _prod_timing and _section_progress take a `pipes` and a
+    -- `work_orders` row. Expanding and casting back fails: the row would also carry the
+    -- joined work-order columns, and Postgres refuses the cast as having too many columns.
+    -- Joining work_orders directly rather than through a CTE keeps `w` a true work_orders
+    -- row, so no cast is needed at all.
+    select p as pipe_row, w as wo_row,
+           w.code as wo_code, w.customer, w.product_code, w.project_length,
+           p.pipe_code, p.bl_status, p.br_status, p.cv_status,
+           p.overall_status, p.last_updated,
+           p.bl_actual_length, p.br_actual_length, p.cv_actual_length,
+           p.last_reading_at, p.last_reading_type, p.last_reading_value, p.last_reading_in_tol
+    from pipes p
+    join work_orders w on w.code = p.work_order_code and not w.archived
   ),
   open_problems as (
     select pr.pipe_code, count(*)::int as n
@@ -362,13 +371,13 @@ begin
         'prodSection',     case when pr.cv_status = 'In progress' then 'Coverline'
                                 when pr.br_status = 'In progress' then 'Braidline'
                                 when pr.bl_status = 'In progress' then 'Baseline' else null end,
-        'prodTiming',      case when pr.cv_status = 'In progress' then _prod_timing(pr::pipes, pr.wo_row, 'Coverline')
-                                when pr.br_status = 'In progress' then _prod_timing(pr::pipes, pr.wo_row, 'Braidline')
-                                when pr.bl_status = 'In progress' then _prod_timing(pr::pipes, pr.wo_row, 'Baseline') else null end,
+        'prodTiming',      case when pr.cv_status = 'In progress' then _prod_timing(pr.pipe_row, pr.wo_row, 'Coverline')
+                                when pr.br_status = 'In progress' then _prod_timing(pr.pipe_row, pr.wo_row, 'Braidline')
+                                when pr.bl_status = 'In progress' then _prod_timing(pr.pipe_row, pr.wo_row, 'Baseline') else null end,
         'sectionProgress', jsonb_build_object(
-                              'Baseline',  _section_progress(pr::pipes, pr.wo_row, 'Baseline'),
-                              'Braidline', _section_progress(pr::pipes, pr.wo_row, 'Braidline'),
-                              'Coverline', _section_progress(pr::pipes, pr.wo_row, 'Coverline'))
+                              'Baseline',  _section_progress(pr.pipe_row, pr.wo_row, 'Baseline'),
+                              'Braidline', _section_progress(pr.pipe_row, pr.wo_row, 'Braidline'),
+                              'Coverline', _section_progress(pr.pipe_row, pr.wo_row, 'Coverline'))
       ) as pipe_json
     from pipe_rows pr
     left join open_problems op on op.pipe_code = pr.pipe_code
@@ -382,7 +391,6 @@ begin
       jsonb_agg(b.pipe_json order by b.last_updated desc) as pipes,
       coalesce(jsonb_agg(b.pipe_json order by b.last_updated desc)
                filter (where b.overall_status <> 'Complete'), '[]'::jsonb) as active_pipes,
-      coalesce(sum(case when b.overall_status <> 'Complete' then 0 else 0 end), 0) as unused,
       coalesce(sum(coalesce(b.cv_actual_length, 0)), 0) as produced_length,
       coalesce(sum((b.pipe_json ->> 'openProblems')::int), 0) as open_problems,
       max(b.last_updated) as newest
