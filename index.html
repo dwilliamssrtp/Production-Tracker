@@ -417,12 +417,35 @@ function handleApiFailure(j){
   throw appErr;
 }
 
+/* Apps Script answers with an HTML page, not JSON, when it won't run the script at all —
+ * most often because the deployment needs re-authorising after the code started using a
+ * new permission, or because the URL isn't a live deployment.
+ *
+ * Left alone that surfaces as "Unexpected token '<'", which tells you nothing and sends
+ * you looking at the wrong end. Say what it actually means and what to do about it.
+ */
+function parseApiResponse(r){
+  return r.text().then(function(body){
+    try {
+      return JSON.parse(body);
+    } catch (e) {
+      var err = new Error(
+        'The server returned a web page instead of data. That usually means the Apps Script ' +
+        'deployment needs re-authorising, or the API URL is not pointing at a live deployment. ' +
+        'Open the API URL directly in a browser tab — Google will say which.');
+      err.notJson = true;
+      err.appError = true; // the server answered, so this isn't a connectivity problem
+      throw err;
+    }
+  });
+}
+
 function apiGet(action, params){
   params = Object.assign({}, params || {});
   if (AUTH.token) params.token = AUTH.token;
   var qs = Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
   var url = API_URL + '?action=' + encodeURIComponent(action) + (qs ? '&' + qs : '');
-  return fetch(url).then(function(r){ return r.json(); }).then(function(j){
+  return fetch(url).then(parseApiResponse).then(function(j){
     if (!j.ok) return handleApiFailure(j);
     noteApiSuccess(j);
     LAST_ENVELOPE = j;
@@ -436,7 +459,7 @@ function apiPost(action, body){
     method: 'POST',
     headers: {'Content-Type': 'text/plain;charset=utf-8'},
     body: JSON.stringify(payload)
-  }).then(function(r){ return r.json(); }).then(function(j){
+  }).then(parseApiResponse).then(function(j){
     if (!j.ok) return handleApiFailure(j);
     noteApiSuccess(j);
     LAST_ENVELOPE = j;
@@ -1045,13 +1068,16 @@ function renderAdmin(){
 
   '<section class="card">' +
     '<h2>Backups</h2>' +
-    '<p class="muted" style="margin-top:0">Everything this app knows lives in one spreadsheet, and its layout is positional &mdash; a sorted tab or an inserted column breaks it. A dated copy is taken nightly and the last '+(STATE.backup&&STATE.backup.keep||30)+' are kept in a <b>'+esc((STATE.backup&&STATE.backup.folder)||'')+'</b> folder in your Drive.</p>' +
+    '<p class="muted" style="margin-top:0">Everything this app knows lives in one spreadsheet, and its layout is positional &mdash; a sorted tab or an inserted column breaks it. A dated copy is kept in a <b>'+esc((STATE.backup&&STATE.backup.folder)||'')+'</b> folder in your Drive, newest '+(STATE.backup&&STATE.backup.keep||30)+' retained. The nightly schedule is a one-time manual step in the Apps Script Triggers page (function <b>'+esc((STATE.backup&&STATE.backup.handler)||'runDailyBackup')+'</b>) &mdash; doing it in code would have required a permission that breaks the whole app until re-authorised.</p>' +
     '<div class="kpis">' +
       '<div class="kpi"><b>Last backup</b><span style="font-size:13px">'+
         (STATE.backup && STATE.backup.lastBackupAt ? esc(fmtTime(STATE.backup.lastBackupAt)) : '<span class="flag">never</span>')+'</span></div>' +
-      '<div class="kpi"><b>Nightly schedule</b><span style="font-size:13px">'+
-        (STATE.backup && STATE.backup.scheduled ? '<span class="ok">on</span>' : '<span class="flag">not set up</span>')+'</span>' +
-        (STATE.backup && !STATE.backup.scheduled ? '<i>run setup() in the Apps Script editor</i>' : '')+'</div>' +
+      '<div class="kpi"><b>Running nightly?</b><span style="font-size:13px">'+
+        (STATE.backup && STATE.backup.healthy ? '<span class="ok">yes</span>'
+          : '<span class="flag">no</span>')+'</span>' +
+        (STATE.backup && !STATE.backup.healthy
+          ? '<i>add the daily trigger &mdash; see SETUP.md</i>'
+          : '<i>last ran '+(STATE.backup ? STATE.backup.hoursSince : '?')+'h ago</i>')+'</div>' +
     '</div>' +
     '<div class="row" style="margin-top:10px"><button class="btn" id="backupNowBtn">Back up now</button></div>' +
   '</section>' +

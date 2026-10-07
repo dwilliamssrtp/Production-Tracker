@@ -229,7 +229,7 @@ var PUBLIC_ACTIONS = ['login', 'qrLogin'];
 // Bumped whenever Code.gs changes in a way that matters. Returned by ping and shown in
 // the site's header, because "is the backend I just edited actually deployed?" is
 // otherwise unanswerable from the outside — saving the editor does not publish it.
-var BUILD = '2026-10-07.2';
+var BUILD = '2026-10-07.3';
 
 var TIME_DRIFT_TOLERANCE_MIN = 5;
 
@@ -378,7 +378,6 @@ function setup() {
     return;
   }
 
-  installBackupTrigger_();
 
   // One-off backfill of the denormalised last-reading columns, so reels that already
   // have history don't show a blank "Last reading" on the dashboard until someone logs
@@ -499,24 +498,27 @@ var BACKUP_KEEP = 30;
 var BACKUP_LAST_SETTING = 'LastBackupAt';
 var BACKUP_HANDLER = 'runDailyBackup';
 
-function installBackupTrigger_() {
-  try {
-    var already = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === BACKUP_HANDLER; });
-    if (already) return false;
-    ScriptApp.newTrigger(BACKUP_HANDLER).timeBased().everyDays(1).atHour(2).create();
-    return true;
-  } catch (e) {
-    return false; // no authorisation for triggers yet — the manual button still works
-  }
-}
+/* Deliberately no ScriptApp here.
+ *
+ * Creating the nightly trigger in code needs the script.scriptapp permission, and adding a
+ * permission the live deployment hasn't been granted makes Apps Script answer every single
+ * request with an HTML authorisation page instead of JSON — the whole app stops working,
+ * not just backups. That is a terrible trade for a convenience: the schedule is set up once,
+ * by hand, from the Triggers page. See SETUP.md.
+ *
+ * Whether it's actually running is judged from when the last backup ran, which is the
+ * thing worth knowing anyway — a trigger that exists but has been failing for a month
+ * looks healthy by any other measure.
+ */
 
-// Called by the nightly trigger, and by the admin panel's "Back up now".
+// The function to point that trigger at. Also what "Back up now" calls.
 function runDailyBackup() { return backupNow_(); }
 
 function backupNow_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var folder = getOrCreateFolder_(BACKUP_FOLDER_NAME, DriveApp.getRootFolder());
-  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'GMT', 'yyyy-MM-dd HHmm');
+  // The spreadsheet's own timezone, so this needs no permission beyond the one we have.
+  var stamp = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone() || 'GMT', 'yyyy-MM-dd HHmm');
   var name = 'SRTP Production Tracker ' + stamp;
 
   DriveApp.getFileById(ss.getId()).makeCopy(name, folder);
@@ -538,11 +540,16 @@ function pruneBackups_(folder) {
 
 function apiBackupStatus_() {
   var last = getSetting_(BACKUP_LAST_SETTING);
-  var scheduled = false;
-  try {
-    scheduled = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === BACKUP_HANDLER; });
-  } catch (e) { /* can't read triggers without authorisation */ }
-  return { lastBackupAt: last || '', scheduled: scheduled, keep: BACKUP_KEEP, folder: BACKUP_FOLDER_NAME };
+  // "Has one run recently?" rather than "does a trigger exist?" — the second can be true
+  // while backups have silently failed for weeks, and reading triggers needs a permission
+  // that isn't worth the risk (see the note above runDailyBackup).
+  var hoursSince = last ? Math.floor((Date.now() - new Date(last).getTime()) / 3600000) : null;
+  return {
+    lastBackupAt: last || '',
+    hoursSince: hoursSince,
+    healthy: hoursSince !== null && hoursSince < 48,
+    keep: BACKUP_KEEP, folder: BACKUP_FOLDER_NAME, handler: BACKUP_HANDLER
+  };
 }
 
 // Everything the admin panel needs, in one request. It was three — accounts, operator
