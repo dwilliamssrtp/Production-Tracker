@@ -118,21 +118,21 @@ create or replace function api_create_work_order(
 returns jsonb
 language plpgsql volatile security definer set search_path = public
 as $$
-declare code text := trim(coalesce(p_code, ''));
+declare v_code text := trim(coalesce(p_code, ''));
 begin
   perform _require(p_token, array['Admin']);
-  if code = '' then raise exception 'Work order code is required'; end if;
-  if exists (select 1 from work_orders w where w.code = code) then
-    raise exception 'Work order code "%" already exists', code;
+  if v_code = '' then raise exception 'Work order code is required'; end if;
+  if exists (select 1 from work_orders w where w.code = v_code) then
+    raise exception 'Work order code "%" already exists', v_code;
   end if;
 
   insert into work_orders (code, created_by, customer, product_code, pipe_size, email_to,
                            project_length, spec)
-  values (code, coalesce(p_created_by,''), coalesce(p_customer,''), coalesce(p_product_code,''),
+  values (v_code, coalesce(p_created_by,''), coalesce(p_customer,''), coalesce(p_product_code,''),
           coalesce(p_pipe_size,''), coalesce(p_email_to,''), p_project_length,
           coalesce(p_spec, '{}'::jsonb));
 
-  return jsonb_build_object('code', code);
+  return jsonb_build_object('code', v_code);
 end;
 $$;
 
@@ -143,11 +143,11 @@ create or replace function api_update_work_order(
 returns jsonb
 language plpgsql volatile security definer set search_path = public
 as $$
-declare code text := trim(coalesce(p_code, ''));
+declare v_code text := trim(coalesce(p_code, ''));
 begin
   perform _require(p_token, array['Admin']);
-  if not exists (select 1 from work_orders w where w.code = code) then
-    raise exception 'Work order not found: %', code;
+  if not exists (select 1 from work_orders w where w.code = v_code) then
+    raise exception 'Work order not found: %', v_code;
   end if;
 
   update work_orders set
@@ -160,9 +160,9 @@ begin
     -- ones it doesn't.
     spec           = coalesce(spec, '{}'::jsonb) || coalesce(p_spec, '{}'::jsonb),
     last_updated   = now()
-  where code = api_update_work_order.code;
+  where work_orders.code = v_code;
 
-  return jsonb_build_object('code', code);
+  return jsonb_build_object('code', v_code);
 end;
 $$;
 
