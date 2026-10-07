@@ -229,7 +229,7 @@ var PUBLIC_ACTIONS = ['login', 'qrLogin'];
 // Bumped whenever Code.gs changes in a way that matters. Returned by ping and shown in
 // the site's header, because "is the backend I just edited actually deployed?" is
 // otherwise unanswerable from the outside — saving the editor does not publish it.
-var BUILD = '2026-10-07.3';
+var BUILD = '2026-10-07.4';
 
 var TIME_DRIFT_TOLERANCE_MIN = 5;
 
@@ -496,24 +496,14 @@ function backfillLastReadings_() {
 var BACKUP_FOLDER_NAME = 'SRTP Production Tracker Backups';
 var BACKUP_KEEP = 30;
 var BACKUP_LAST_SETTING = 'LastBackupAt';
-var BACKUP_HANDLER = 'runDailyBackup';
 
-/* Deliberately no ScriptApp here.
+/* Backups run only when the controller presses "Back up now" — never on a schedule.
  *
- * Creating the nightly trigger in code needs the script.scriptapp permission, and adding a
- * permission the live deployment hasn't been granted makes Apps Script answer every single
- * request with an HTML authorisation page instead of JSON — the whole app stops working,
- * not just backups. That is a terrible trade for a convenience: the schedule is set up once,
- * by hand, from the Triggers page. See SETUP.md.
- *
- * Whether it's actually running is judged from when the last backup ran, which is the
- * thing worth knowing anyway — a trigger that exists but has been failing for a month
- * looks healthy by any other measure.
+ * There is deliberately no ScriptApp here and no trigger. Creating one in code needs the
+ * script.scriptapp permission, and adding a permission the live deployment hasn't been
+ * granted makes Apps Script answer every request with an HTML page instead of JSON, taking
+ * the whole app down over a backup. Nothing here is worth that.
  */
-
-// The function to point that trigger at. Also what "Back up now" calls.
-function runDailyBackup() { return backupNow_(); }
-
 function backupNow_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var folder = getOrCreateFolder_(BACKUP_FOLDER_NAME, DriveApp.getRootFolder());
@@ -540,15 +530,13 @@ function pruneBackups_(folder) {
 
 function apiBackupStatus_() {
   var last = getSetting_(BACKUP_LAST_SETTING);
-  // "Has one run recently?" rather than "does a trigger exist?" — the second can be true
-  // while backups have silently failed for weeks, and reading triggers needs a permission
-  // that isn't worth the risk (see the note above runDailyBackup).
-  var hoursSince = last ? Math.floor((Date.now() - new Date(last).getTime()) / 3600000) : null;
+  // Backups are manual, so how long it's been is the only thing worth reporting — it's
+  // the nudge to take one, since nothing else will.
+  var daysSince = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : null;
   return {
     lastBackupAt: last || '',
-    hoursSince: hoursSince,
-    healthy: hoursSince !== null && hoursSince < 48,
-    keep: BACKUP_KEEP, folder: BACKUP_FOLDER_NAME, handler: BACKUP_HANDLER
+    daysSince: daysSince,
+    keep: BACKUP_KEEP, folder: BACKUP_FOLDER_NAME
   };
 }
 
@@ -950,7 +938,11 @@ function issueSession_(accountId, kind) {
  * role change, rotating the operator key — drops the cached entries explicitly rather
  * than waiting for them to expire. See dropCachedSessionsFor_.
  */
-var SESSION_CACHE_SEC = 600;
+// An hour, not ten minutes. Every expiry costs a full scan of the Sessions sheet, which
+// grows with every tag scan — so a short TTL means repeatedly paying for a sheet that only
+// gets bigger. Revocation doesn't rely on expiry: logout, disable, delete, role change and
+// key rotation all drop the cached entries outright (dropCachedSessionsFor_).
+var SESSION_CACHE_SEC = 3600;
 
 function sessionCacheKey_(token) { return 'sess:' + token; }
 
@@ -1008,6 +1000,10 @@ function dropCachedSessionsFor_(accountId) {
  * worth comes out in one or two calls rather than sixty.
  */
 var SESSION_PRUNE_THRESHOLD = 40;
+// Above this many rows the sheet itself is the problem, not how many are expired:
+// resolving any token scans the whole Token column, so a big sheet taxes every request
+// whose session cache has lapsed. Past this, clear out whatever has expired.
+var SESSION_SHEET_SOFT_CAP = 150;
 
 function pruneSessions_(force) {
   var sheet = getSheet_(SHEETS.SESSIONS);
@@ -1015,8 +1011,9 @@ function pruneSessions_(force) {
   var now = Date.now();
   var stale = rows.filter(function (r) { return new Date(r.ExpiresAt).getTime() < now; });
   if (!stale.length) return 0;
-  // Below the threshold the rows are cheap to carry and not worth stalling a sign-in for.
-  if (!force && stale.length < SESSION_PRUNE_THRESHOLD) return 0;
+  // Below the threshold the rows are cheap to carry and not worth stalling a sign-in for —
+  // unless the sheet has grown big enough that carrying them costs every other request.
+  if (!force && stale.length < SESSION_PRUNE_THRESHOLD && rows.length < SESSION_SHEET_SOFT_CAP) return 0;
 
   // Walk the doomed rows from the bottom up, deleting each consecutive run in one call.
   // Bottom-up so deletions don't shift the rows still queued behind them.

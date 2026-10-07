@@ -424,6 +424,34 @@ function handleApiFailure(j){
  * Left alone that surfaces as "Unexpected token '<'", which tells you nothing and sends
  * you looking at the wrong end. Say what it actually means and what to do about it.
  */
+/* Nothing waits forever.
+ *
+ * Every "Loading…" in this app sat on a promise with no time limit, so a request that
+ * never came back left the screen stuck with no explanation and nothing to act on — which
+ * is indistinguishable from the app being broken. Apps Script can stall on contention or
+ * quota, so this needs an answer rather than an assumption that it won't happen.
+ */
+var REQUEST_TIMEOUT_MS = 25000;
+
+function fetchWithTimeout(url, opts){
+  if (typeof AbortController === 'undefined') return fetch(url, opts); // older browser
+  var ctl = new AbortController();
+  var timer = setTimeout(function(){ ctl.abort(); }, REQUEST_TIMEOUT_MS);
+  var merged = Object.assign({}, opts || {}, {signal: ctl.signal});
+  return fetch(url, merged).then(
+    function(r){ clearTimeout(timer); return r; },
+    function(err){
+      clearTimeout(timer);
+      if (err && err.name === 'AbortError'){
+        var e = new Error('The server did not answer within ' + Math.round(REQUEST_TIMEOUT_MS/1000) +
+          ' seconds. It may be busy — try again. If it keeps happening, check the Apps Script deployment.');
+        e.timedOut = true;
+        throw e;
+      }
+      throw err;
+    });
+}
+
 function parseApiResponse(r){
   return r.text().then(function(body){
     try {
@@ -445,7 +473,7 @@ function apiGet(action, params){
   if (AUTH.token) params.token = AUTH.token;
   var qs = Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
   var url = API_URL + '?action=' + encodeURIComponent(action) + (qs ? '&' + qs : '');
-  return fetch(url).then(parseApiResponse).then(function(j){
+  return fetchWithTimeout(url).then(parseApiResponse).then(function(j){
     if (!j.ok) return handleApiFailure(j);
     noteApiSuccess(j);
     LAST_ENVELOPE = j;
@@ -455,7 +483,7 @@ function apiGet(action, params){
 function apiPost(action, body){
   var payload = Object.assign({action: action}, body || {});
   if (AUTH.token && payload.token === undefined) payload.token = AUTH.token;
-  return fetch(API_URL, {
+  return fetchWithTimeout(API_URL, {
     method: 'POST',
     headers: {'Content-Type': 'text/plain;charset=utf-8'},
     body: JSON.stringify(payload)
@@ -1003,6 +1031,21 @@ function loadAdmin(){
   // One request for the whole panel. It was three, and on Apps Script the round trip is
   // the cost, not the work — so three calls to fill one screen was three times the wait.
   apiGet('adminPanel')
+    .catch(function(err){
+      /* A deployed backend older than this page doesn't know 'adminPanel'. Rather than
+       * leave the screen stranded, fall back to the calls it does have. A front end is
+       * re-hosted in one step and the backend takes three, so the two WILL get out of
+       * step — that should degrade, not break. */
+      if (!err || !/unknown .*action/i.test(err.message || '')) throw err;
+      STATE.backendStale = true;
+      return Promise.all([
+        apiGet('listAccounts'),
+        apiGet('getOperatorKey'),
+        apiGet('backupStatus').catch(function(){ return null; })
+      ]).then(function(res){
+        return { accounts: res[0].accounts, operatorKey: res[1].key, backup: res[2] };
+      });
+    })
     .then(function(d){
       STATE.accounts = d.accounts;
       STATE.operatorKey = d.operatorKey;
@@ -1068,16 +1111,17 @@ function renderAdmin(){
 
   '<section class="card">' +
     '<h2>Backups</h2>' +
-    '<p class="muted" style="margin-top:0">Everything this app knows lives in one spreadsheet, and its layout is positional &mdash; a sorted tab or an inserted column breaks it. A dated copy is kept in a <b>'+esc((STATE.backup&&STATE.backup.folder)||'')+'</b> folder in your Drive, newest '+(STATE.backup&&STATE.backup.keep||30)+' retained. The nightly schedule is a one-time manual step in the Apps Script Triggers page (function <b>'+esc((STATE.backup&&STATE.backup.handler)||'runDailyBackup')+'</b>) &mdash; doing it in code would have required a permission that breaks the whole app until re-authorised.</p>' +
+    '<p class="muted" style="margin-top:0">Everything this app knows lives in one spreadsheet, and its layout is positional &mdash; a sorted tab or an inserted column breaks it. Backups run only when you press the button below — nothing is scheduled. A dated copy goes into a <b>'+esc((STATE.backup&&STATE.backup.folder)||'')+'</b> folder in your Drive, newest '+(STATE.backup&&STATE.backup.keep||30)+' retained. Worth doing before any deploy, and after a big job.</p>' +
     '<div class="kpis">' +
       '<div class="kpi"><b>Last backup</b><span style="font-size:13px">'+
         (STATE.backup && STATE.backup.lastBackupAt ? esc(fmtTime(STATE.backup.lastBackupAt)) : '<span class="flag">never</span>')+'</span></div>' +
-      '<div class="kpi"><b>Running nightly?</b><span style="font-size:13px">'+
-        (STATE.backup && STATE.backup.healthy ? '<span class="ok">yes</span>'
-          : '<span class="flag">no</span>')+'</span>' +
-        (STATE.backup && !STATE.backup.healthy
-          ? '<i>add the daily trigger &mdash; see SETUP.md</i>'
-          : '<i>last ran '+(STATE.backup ? STATE.backup.hoursSince : '?')+'h ago</i>')+'</div>' +
+      '<div class="kpi"><b>Age</b><span style="font-size:13px">'+
+        (STATE.backup && STATE.backup.daysSince !== null && STATE.backup.daysSince !== undefined
+          ? (STATE.backup.daysSince === 0 ? '<span class="ok">today</span>'
+             : (STATE.backup.daysSince > 7 ? '<span class="flag">'+STATE.backup.daysSince+' days ago</span>'
+                                           : STATE.backup.daysSince+' days ago'))
+          : '<span class="flag">no backup yet</span>')+'</span>' +
+        '<i>nothing is automatic &mdash; it backs up when you press the button</i></div>' +
     '</div>' +
     '<div class="row" style="margin-top:10px"><button class="btn" id="backupNowBtn">Back up now</button></div>' +
   '</section>' +
