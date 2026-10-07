@@ -182,6 +182,10 @@
   .chart-dev-label{font-size:11px;fill:var(--crit);font-weight:700;font-family:"Segoe UI",Arial,sans-serif;}
   .chart-typo-label{font-size:11px;fill:var(--warn);font-weight:700;font-family:"Segoe UI",Arial,sans-serif;}
   .suspect{color:var(--warn);font-weight:700;}
+  /* A voided measurement is struck through, never removed — the record has to show that
+     something was logged and then withdrawn, not look as though it never happened. */
+  tr.voided td{opacity:.5;text-decoration:line-through;}
+  tr.voided td:last-child{text-decoration:none;}
   .chart-problem-line{stroke:var(--crit);stroke-width:1;stroke-dasharray:2 3;opacity:.55;}
   .chart-problem-flag{font-size:15px;fill:var(--crit);}
 
@@ -389,7 +393,7 @@ var STATE = {
   tvPage: 0, tvPageTimer: null, tvDrillWO: null, tvDrillPipe: null, tvSection: null, tvPipeData: null,
   pdCode: null, pdSection: null, pdData: null,
   loginError: '', operatorKey: '', accounts: null, adminError: '',
-  rpPipe: null, rpData: null, rpIndex: null, rpLoadedAt: null,
+  rpPipe: null, rpData: null, rpIndex: null, rpLoadedAt: null, backup: null,
   tagReturn: null, archive: null
 };
 
@@ -941,10 +945,11 @@ function viewAdmin(){
 function bindAdmin(){ loadAdmin(); }
 
 function loadAdmin(){
-  Promise.all([apiGet('listAccounts'), apiGet('getOperatorKey')])
+  Promise.all([apiGet('listAccounts'), apiGet('getOperatorKey'), apiGet('backupStatus')])
     .then(function(res){
       STATE.accounts = res[0].accounts;
       STATE.operatorKey = res[1].key;
+      STATE.backup = res[2];
       renderAdmin();
     })
     .catch(function(err){
@@ -1005,6 +1010,19 @@ function renderAdmin(){
   '</section>' +
 
   '<section class="card">' +
+    '<h2>Backups</h2>' +
+    '<p class="muted" style="margin-top:0">Everything this app knows lives in one spreadsheet, and its layout is positional &mdash; a sorted tab or an inserted column breaks it. A dated copy is taken nightly and the last '+(STATE.backup&&STATE.backup.keep||30)+' are kept in a <b>'+esc((STATE.backup&&STATE.backup.folder)||'')+'</b> folder in your Drive.</p>' +
+    '<div class="kpis">' +
+      '<div class="kpi"><b>Last backup</b><span style="font-size:13px">'+
+        (STATE.backup && STATE.backup.lastBackupAt ? esc(fmtTime(STATE.backup.lastBackupAt)) : '<span class="flag">never</span>')+'</span></div>' +
+      '<div class="kpi"><b>Nightly schedule</b><span style="font-size:13px">'+
+        (STATE.backup && STATE.backup.scheduled ? '<span class="ok">on</span>' : '<span class="flag">not set up</span>')+'</span>' +
+        (STATE.backup && !STATE.backup.scheduled ? '<i>run setup() in the Apps Script editor</i>' : '')+'</div>' +
+    '</div>' +
+    '<div class="row" style="margin-top:10px"><button class="btn" id="backupNowBtn">Back up now</button></div>' +
+  '</section>' +
+
+  '<section class="card">' +
     '<h2>Your password</h2>' +
     '<div class="grid g2">' +
       '<div class="fld"><label>Current password</label><input id="pw_old" type="password" autocomplete="current-password"></div>' +
@@ -1017,6 +1035,18 @@ function renderAdmin(){
 }
 
 function bindAdminControls(root){
+  E('backupNowBtn').addEventListener('click', function(){
+    var b = E('backupNowBtn'); b.disabled = true; b.textContent = 'Backing up…';
+    apiPost('backupNow', {}).then(function(res){
+      STATE.backup = res;
+      toast('Backed up — ' + res.name);
+      renderAdmin();
+    }).catch(function(err){
+      b.disabled = false; b.textContent = 'Back up now';
+      if (!err.sessionExpired) toast(err.message, true);
+    });
+  });
+
   E('rotateKeyBtn').addEventListener('click', function(){
     if (!confirm('Rotate the operator key?\n\nEvery QR tag already printed stops working immediately and operators scanning them will be told to get a new tag. You will need to reprint the tag for every reel still in production.')) return;
     apiPost('rotateOperatorKey', {}).then(function(res){
@@ -1732,7 +1762,7 @@ function viewOperator(){
 // (first-to-last footage over elapsed calendar time) and a "current" rate from just the
 // last two footage-tagged readings, which reacts faster to a recent slowdown/speedup.
 function computeActualSpeed(readings, section){
-  var pts = readings.filter(function(r){ return r.Section===section && r.Type==='OD' && r.Footage!=='' && r.Footage!==undefined; })
+  var pts = readings.filter(function(r){ return r.Section===section && r.Type==='OD' && !isVoid(r) && r.Footage!=='' && r.Footage!==undefined; })
     .map(function(r){ return {t: new Date(r.Timestamp).getTime(), f: Number(r.Footage)}; })
     .sort(function(a,b){ return a.t-b.t; });
   if (pts.length < 2) return null;
@@ -1949,12 +1979,50 @@ function readingsTableHtml(sec){
   var rows = STATE.readings.filter(function(r){ return r.Section===sec; })
     .sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); }).slice(0,20);
   if (!rows.length) return '<p class="muted">No readings logged yet this section.</p>';
-  return '<table style="margin-top:8px"><thead><tr><th class="l">Time</th><th>Operator</th><th>Type</th><th>Value</th><th>Footage</th><th>Tolerance</th></tr></thead><tbody>' +
+  return '<table style="margin-top:8px"><thead><tr><th class="l">Time</th><th>Operator</th><th>Type</th><th>Value</th><th>Footage</th><th>Tolerance</th><th>&nbsp;</th></tr></thead><tbody>' +
     rows.map(function(r){
-      var dot = r.InTol==='Y' ? '<span class="dot good"></span>In tol' : r.InTol==='N' ? '<span class="dot bad"></span>Out of tol' : '<span class="dot none"></span>—';
-      return '<tr><td class="l">'+esc(fmtTime(r.Timestamp))+'</td><td>'+esc(r.Operator)+'</td><td>'+esc(r.Type)+'</td><td class="num">'+esc(r.Value)+'"</td>' +
-        '<td class="num">'+(r.Footage!==''&&r.Footage!==undefined?esc(r.Footage)+' ft':'&mdash;')+'</td><td>'+dot+'</td></tr>';
+      var voided = isVoid(r), pending = isVoidPending(r);
+      var dot = voided ? '<span class="muted">voided</span>'
+              : r.InTol==='Y' ? '<span class="dot good"></span>In tol'
+              : r.InTol==='N' ? '<span class="dot bad"></span>Out of tol'
+              : '<span class="dot none"></span>—';
+      // A struck-out reading stays on the list. Removing it would make the operator's own
+      // record disagree with the controller's, and hide that anything happened at all.
+      var action = voided ? '<span class="muted" title="'+esc(r.VoidReason||'')+'">&mdash;</span>'
+                 : pending ? '<span class="suspect" title="'+esc(r.VoidReason||'')+'">void requested</span>'
+                 : '<button class="btn sm" data-void="'+esc(r.RowId)+'" data-kind="reading">Void</button>';
+      return '<tr'+(voided?' class="voided"':'')+'><td class="l">'+esc(fmtTime(r.Timestamp))+'</td><td>'+esc(r.Operator)+'</td>' +
+        '<td>'+esc(r.Type)+'</td><td class="num">'+esc(r.Value)+'"</td>' +
+        '<td class="num">'+(r.Footage!==''&&r.Footage!==undefined?esc(r.Footage)+' ft':'&mdash;')+'</td>' +
+        '<td>'+dot+'</td><td>'+action+'</td></tr>';
     }).join('') + '</tbody></table>';
+}
+
+/* Asks for a reason and sends the request.
+ *
+ * "typo" is prefilled because it's overwhelmingly the real answer, and a reason box that
+ * takes effort to fill in is a reason box people route around by editing the Sheet.
+ * Still editable, and still required — an empty one is refused.
+ */
+function requestVoid(kind, rowId, onDone){
+  var reason = prompt('Why is this being voided?\n\nThe record is kept either way — it is struck out, not deleted.', 'typo');
+  if (reason === null) return;
+  reason = reason.trim();
+  if (!reason){ toast('A reason is required', true); return; }
+  apiSave('requestVoid', {kind: kind, rowId: rowId, reason: reason, operator: getOperatorName()})
+    .then(function(res){
+      toast(res.status === 'Void' ? 'Voided' : 'Void requested — the controller will review it');
+      if (onDone) onDone();
+    })
+    .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
+}
+
+function bindVoidButtons(root){
+  qsa('[data-void]', root || document).forEach(function(b){
+    b.addEventListener('click', function(){
+      requestVoid(b.dataset.kind, b.dataset.void, function(){ render(); });
+    });
+  });
 }
 
 // Point i sits at i*(360/n) degrees clockwise from 12 o'clock — the same ordering
@@ -2301,6 +2369,7 @@ function liveThicknessCalc(sec){
 function bindOperator(){
   E('backHomeBtn').addEventListener('click', function(){ go('home'); });
   qsa('.tabs button').forEach(function(b){ b.addEventListener('click', function(){ go('operator', {pipeCode: STATE.pipeCode, section: b.dataset.sec}); }); });
+  bindVoidButtons(E('app'));
 
   var sec = STATE.section, prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
 
@@ -2726,7 +2795,7 @@ function renderPipeDetail(){
   var data = STATE.pdData, pipe = data.pipe, wo = data.workOrder, sec = STATE.pdSection;
   var prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
 
-  function odSeries(s){ return data.readings.filter(function(r){ return r.Section===s && r.Type==='OD'; }).sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); }); }
+  function odSeries(s){ return data.readings.filter(function(r){ return r.Section===s && r.Type==='OD' && !isVoid(r); }).sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); }); }
   function statsOf(vals){ if(!vals.length) return null; return {min:Math.min.apply(null,vals), max:Math.max.apply(null,vals), avg:round4(vals.reduce(function(a,b){return a+b;},0)/vals.length)}; }
   function targetTol(p){
     var t = wo[p+'_TargetOD'], tol = wo[p+'_ODTol'];
@@ -2815,6 +2884,17 @@ function renderPipeDetail(){
  * judgement about plausibility given the spec, so it should follow the spec if the spec
  * is corrected, and it needs no schema change.
  */
+/* A struck-out measurement.
+ *
+ * 'Void' means the controller agreed it was wrong: it stops counting everywhere a number
+ * is computed — chart, min/max/average, line speed, the dashboard's last reading — but is
+ * never removed from the record. 'Requested' means an operator has asked; it goes on
+ * counting until the controller agrees, which is the whole point of the request step.
+ */
+function isVoid(r){ return !!r && r.VoidStatus === 'Void'; }
+function isVoidPending(r){ return !!r && r.VoidStatus === 'Requested'; }
+function countPendingVoids(rows){ return (rows||[]).filter(isVoidPending).length; }
+
 var TYPO_TOL_MULTIPLE = 10;
 var TYPO_MIN_FRACTION = 0.2;
 
@@ -3339,7 +3419,7 @@ function rpReadingsTableHtml(readings, sec, wo){
     : '';
 
   return '<table style="margin-top:6px"><thead><tr><th class="l">Time</th><th class="l">Operator</th>' +
-      '<th>Type</th><th>Value</th><th>Footage</th><th>In tol</th><th class="l">Time entered</th></tr></thead><tbody>' +
+      '<th>Type</th><th>Value</th><th>Footage</th><th>In tol</th><th class="l">Time entered</th><th class="l">Void</th></tr></thead><tbody>' +
     rows.map(function(r){
       var tol = r.InTol === true || r.InTol === 'TRUE' ? '<span class="ok">yes</span>'
               : (r.InTol === false || r.InTol === 'FALSE') ? '<span class="flag">NO</span>' : '<span class="muted">—</span>';
@@ -3347,11 +3427,70 @@ function rpReadingsTableHtml(readings, sec, wo){
       // controller is the one who decides whether it was.
       var typo = isLikelyTypo(r.Value, targetTolFor(wo, sec, r.Type));
       if (typo) tol = '<span class="suspect" title="Too far out to be a real measurement">&#9888; typo?</span>';
-      return '<tr><td class="l">'+esc(rpShortTime(r.Timestamp))+'</td><td class="l">'+esc(r.Operator)+'</td>' +
+      var voided = isVoid(r), pending = isVoidPending(r);
+      if (voided) tol = '<span class="muted">voided</span>';
+      return '<tr'+(voided?' class="voided"':'')+'><td class="l">'+esc(rpShortTime(r.Timestamp))+'</td><td class="l">'+esc(r.Operator)+'</td>' +
         '<td>'+esc(r.Type)+'</td><td class="num'+(typo?' suspect':'')+'">'+esc(r.Value)+'</td>' +
         '<td class="num">'+(r.Footage===''||r.Footage===undefined?'—':esc(r.Footage))+'</td><td>'+tol+'</td>' +
-        '<td class="l">'+rpTimeSourceCell(r)+'</td></tr>';
-    }).join('') + '</tbody></table>' + banner;
+        '<td class="l">'+rpTimeSourceCell(r)+'</td>' +
+        '<td class="l">'+rpVoidCell(r, 'reading')+'</td></tr>';
+    }).join('') + '</tbody></table>' + banner + rpPendingVoidBanner(rows);
+}
+
+/* The controller's side of a void.
+ *
+ * A pending request is the only thing here with buttons: approving or rejecting is the
+ * decision this whole mechanism exists for. Everything else is just stating where the
+ * record stands.
+ */
+function rpVoidCell(r, kind){
+  if (isVoid(r)){
+    return '<span class="muted" title="'+esc(r.VoidReason||'')+'">voided &mdash; '+esc(r.VoidReason||'')+
+           (r.VoidedBy ? ' <i>('+esc(r.VoidedBy)+')</i>' : '')+'</span>';
+  }
+  if (isVoidPending(r)){
+    return '<span class="suspect">'+esc(r.VoidReason||'void requested')+
+      (r.VoidRequestedBy ? ' <i>('+esc(r.VoidRequestedBy)+')</i>' : '')+'</span><br>' +
+      '<button class="btn sm danger" data-voidok="'+esc(r.RowId)+'" data-kind="'+kind+'">Approve</button> ' +
+      '<button class="btn sm" data-voidno="'+esc(r.RowId)+'" data-kind="'+kind+'">Reject</button>';
+  }
+  if (r.VoidStatus === 'Rejected'){
+    return '<span class="muted" title="Void request was turned down">request rejected</span>';
+  }
+  return '<button class="btn sm" data-void="'+esc(r.RowId)+'" data-kind="'+kind+'">Void</button>';
+}
+
+function rpPendingVoidBanner(rows){
+  var n = countPendingVoids(rows);
+  if (!n) return '';
+  return '<p class="muted" style="margin:6px 0 0;font-size:10.5px"><span class="suspect">&#9888; '+n+
+    '</span> void request'+(n===1?'':'s')+' waiting on you. Until you approve, '+
+    (n===1?'it still counts':'they still count')+' toward the chart and the averages.</p>';
+}
+
+function bindVoidDecisions(root){
+  function resolve(kind, rowId, approve){
+    apiSave('resolveVoid', {kind: kind, rowId: rowId, approve: approve})
+      .then(function(){
+        toast(approve ? 'Voided' : 'Void request rejected');
+        if (STATE.view === 'reports' && STATE.rpPipe) loadReport(STATE.rpPipe);
+        else render();
+      })
+      .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
+  }
+  qsa('[data-voidok]', root).forEach(function(b){
+    b.addEventListener('click', function(){ resolve(b.dataset.kind, b.dataset.voidok, true); });
+  });
+  qsa('[data-voidno]', root).forEach(function(b){
+    b.addEventListener('click', function(){ resolve(b.dataset.kind, b.dataset.voidno, false); });
+  });
+  qsa('[data-void]', root).forEach(function(b){
+    b.addEventListener('click', function(){
+      requestVoid(b.dataset.kind, b.dataset.void, function(){
+        if (STATE.view === 'reports' && STATE.rpPipe) loadReport(STATE.rpPipe); else render();
+      });
+    });
+  });
 }
 
 // Every individual wall reading, laid out the way it was taken: one row per clock
@@ -3429,7 +3568,7 @@ function rpSectionDetailHtml(data, sec){
   var wo = data.workOrder;
   var prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
 
-  var series = data.readings.filter(function(r){ return r.Section===sec && r.Type==='OD'; })
+  var series = data.readings.filter(function(r){ return r.Section===sec && r.Type==='OD' && !isVoid(r); })
     .sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); });
   var vals = series.map(function(r){ return Number(r.Value); });
   var t = wo[prefix+'_TargetOD'], tol = wo[prefix+'_ODTol'];
@@ -3537,6 +3676,7 @@ function renderReport(){
       .then(function(){ b.disabled = false; });
   });
   E('rpPrintBtn').addEventListener('click', printReport);
+  bindVoidDecisions(root);
 }
 
 // The default print rules hide everything but the reel tag, so printing a report has
@@ -3783,7 +3923,7 @@ function renderTVPipeChart(data){
   var pipe = data.pipe, wo = data.workOrder, sec = STATE.tvSection;
   var prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
 
-  function odSeries(s){ return data.readings.filter(function(r){ return r.Section===s && r.Type==='OD'; }).sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); }); }
+  function odSeries(s){ return data.readings.filter(function(r){ return r.Section===s && r.Type==='OD' && !isVoid(r); }).sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); }); }
   function statsOf(vals){ if(!vals.length) return null; return {min:Math.min.apply(null,vals), max:Math.max.apply(null,vals), avg:round4(vals.reduce(function(a,b){return a+b;},0)/vals.length)}; }
   function targetTol(p){
     var t = wo[p+'_TargetOD'], tol = wo[p+'_ODTol'];

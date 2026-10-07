@@ -115,10 +115,14 @@ var HEADERS = {
   // operator says the reading was taken at; EnteredAt is when the server actually received
   // it. The two diverging is the whole point - see apiAddReading_.
   Readings: ['RowId', 'PipeCode', 'Section', 'Timestamp', 'Operator', 'Type', 'Value', 'InTol', 'Footage',
-    'EnteredAt', 'TimeSource', 'TimeOffsetMin'],
+    'EnteredAt', 'TimeSource', 'TimeOffsetMin',
+    // Voiding. Appended per the append-only rule. See VOID_COLUMNS / apiRequestVoid_ —
+    // a measurement is never edited or deleted, only struck out with a reason attached.
+    'VoidStatus', 'VoidReason', 'VoidRequestedBy', 'VoidRequestedAt', 'VoidedBy', 'VoidedAt'],
   ThicknessChecks: ['RowId', 'PipeCode', 'Section', 'Position', 'Timestamp', 'Operator', 'OD',
     'T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12','T13','T14','T15','T16',
-    'AvgThickness', 'ComputedID', 'Ovality'],
+    'AvgThickness', 'ComputedID', 'Ovality',
+    'VoidStatus', 'VoidReason', 'VoidRequestedBy', 'VoidRequestedAt', 'VoidedBy', 'VoidedAt'],
   Notes: ['RowId', 'PipeCode', 'Section', 'Timestamp', 'Operator', 'Text'],
   Photos: ['RowId', 'PipeCode', 'Section', 'Timestamp', 'Operator', 'Caption', 'DriveUrl', 'DriveFileId', 'ProblemReportId'],
   EmailLog: ['RowId', 'PipeCode', 'SentAt', 'SentTo', 'Trigger'],
@@ -190,6 +194,9 @@ var ACTION_ROLES = {
   // Logging against one reel — the operator's whole job
   addReading: ['Admin', 'Operator'],
   addReadings: ['Admin', 'Operator'],
+  // An operator may ask for a measurement to be struck out; only the controller agrees to it.
+  requestVoid: ['Admin', 'Operator'],
+  resolveVoid: ['Admin'],
   addThicknessCheck: ['Admin', 'Operator'],
   addNote: ['Admin', 'Operator'],
   addPhoto: ['Admin', 'Operator'],
@@ -207,7 +214,9 @@ var ACTION_ROLES = {
   resetPassword: ['Admin'],
   setAccountActive: ['Admin'],
   deleteAccount: ['Admin'],
-  rotateOperatorKey: ['Admin']
+  rotateOperatorKey: ['Admin'],
+  backupStatus: ['Admin'],
+  backupNow: ['Admin']
 };
 
 // Unauthenticated — these are how you GET a session, so they can't require one.
@@ -219,7 +228,7 @@ var PUBLIC_ACTIONS = ['login', 'qrLogin'];
 // Bumped whenever Code.gs changes in a way that matters. Returned by ping and shown in
 // the site's header, because "is the backend I just edited actually deployed?" is
 // otherwise unanswerable from the outside — saving the editor does not publish it.
-var BUILD = '2026-10-06.3';
+var BUILD = '2026-10-07.1';
 
 var TIME_DRIFT_TOLERANCE_MIN = 5;
 
@@ -302,15 +311,42 @@ var TEXT_CODE_COLUMNS = {
 };
 var TEXT_FORMAT_ROWS = 5000; // headroom of formatted (blank) rows below the header
 
+/* Is it safe to write the expected header row onto this sheet?
+ *
+ * Every column is addressed by position, so the header row is a map of where the data
+ * lives. Rewriting it blindly — which is what this used to do — is only harmless when the
+ * existing columns are still in the same order and we're just adding new ones on the end.
+ *
+ * If somebody has inserted or reordered a column, the data underneath hasn't moved but
+ * the labels would, and every lookup afterwards reads the wrong field. Worse, setup() is
+ * run as part of a normal deploy, so that corruption would arrive during routine
+ * maintenance and look like nothing happened. Refuse instead and say which tab.
+ */
+function headerRewriteIsSafe_(existing, expected) {
+  var present = existing.filter(function (h) { return h !== '' && h !== null; });
+  if (!present.length) return true; // fresh sheet
+  // Every existing label must still be a known column, in the same relative order.
+  var lastIndex = -1;
+  for (var i = 0; i < present.length; i++) {
+    var idx = expected.indexOf(present[i]);
+    if (idx < 0 || idx <= lastIndex) return false;
+    lastIndex = idx;
+  }
+  return true;
+}
+
 function setup() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var blocked = [];
   Object.keys(HEADERS).forEach(function (name) {
     var sheet = ss.getSheetByName(name);
     if (!sheet) sheet = ss.insertSheet(name);
     var headers = HEADERS[name];
-    var existing = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
-    var same = existing.join('|') === headers.join('|');
+    var width = Math.max(headers.length, sheet.getLastColumn());
+    var existing = sheet.getRange(1, 1, 1, width).getValues()[0];
+    var same = existing.slice(0, headers.length).join('|') === headers.join('|') && width === headers.length;
     if (!same) {
+      if (!headerRewriteIsSafe_(existing, headers)) { blocked.push(name); return; }
       sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
       sheet.setFrozenRows(1);
     }
@@ -328,6 +364,20 @@ function setup() {
   if (def && def.getLastRow() === 0 && def.getLastColumn() <= 1) ss.deleteSheet(def);
 
   var msg = 'Sheets are ready.';
+
+  if (blocked.length) {
+    msg = 'STOPPED — did not touch: ' + blocked.join(', ') +
+      '\n\nThose tabs have columns that have been inserted, removed or reordered. The data is' +
+      ' addressed by column position, so writing the expected headers back would relabel your' +
+      ' existing data instead of fixing it.' +
+      '\n\nRestore those tabs to their previous column order (a backup copy will have it) and' +
+      ' run setup() again. Everything else was left alone.';
+    Logger.log(msg);
+    try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* headless */ }
+    return;
+  }
+
+  installBackupTrigger_();
 
   // One-off backfill of the denormalised last-reading columns, so reels that already
   // have history don't show a blank "Last reading" on the dashboard until someone logs
@@ -430,6 +480,73 @@ function backfillLastReadings_() {
   });
   if (count) { _memoDrop_(SHEETS.PIPES); cacheClearDash_(); }
   return count;
+}
+
+/* ---------- backups ----------
+ *
+ * Everything this app knows lives in one spreadsheet, and the layout is positional: a
+ * sorted tab or an inserted column breaks it in ways that aren't visible until numbers
+ * start looking wrong. headerRewriteIsSafe_ stops setup() making that worse, but it can't
+ * undo it — that needs a copy from before it happened.
+ *
+ * So: a dated copy every night, keeping the last BACKUP_KEEP. The last run is surfaced in
+ * the admin panel, because a backup that quietly stopped months ago is worse than none —
+ * it's the same exposure plus the belief you're covered.
+ */
+var BACKUP_FOLDER_NAME = 'SRTP Production Tracker Backups';
+var BACKUP_KEEP = 30;
+var BACKUP_LAST_SETTING = 'LastBackupAt';
+var BACKUP_HANDLER = 'runDailyBackup';
+
+function installBackupTrigger_() {
+  try {
+    var already = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === BACKUP_HANDLER; });
+    if (already) return false;
+    ScriptApp.newTrigger(BACKUP_HANDLER).timeBased().everyDays(1).atHour(2).create();
+    return true;
+  } catch (e) {
+    return false; // no authorisation for triggers yet — the manual button still works
+  }
+}
+
+// Called by the nightly trigger, and by the admin panel's "Back up now".
+function runDailyBackup() { return backupNow_(); }
+
+function backupNow_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var folder = getOrCreateFolder_(BACKUP_FOLDER_NAME, DriveApp.getRootFolder());
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'GMT', 'yyyy-MM-dd HHmm');
+  var name = 'SRTP Production Tracker ' + stamp;
+
+  DriveApp.getFileById(ss.getId()).makeCopy(name, folder);
+  setSetting_(BACKUP_LAST_SETTING, nowIso_());
+  pruneBackups_(folder);
+  return { backedUpAt: nowIso_(), name: name };
+}
+
+// Keeps the newest BACKUP_KEEP and trashes the rest, so Drive doesn't fill with copies.
+function pruneBackups_(folder) {
+  try {
+    var files = [];
+    var it = folder.getFiles();
+    while (it.hasNext()) { var f = it.next(); files.push({ file: f, at: f.getDateCreated().getTime() }); }
+    files.sort(function (a, b) { return b.at - a.at; });
+    files.slice(BACKUP_KEEP).forEach(function (x) { x.file.setTrashed(true); });
+  } catch (e) { /* pruning is housekeeping — never fail a backup over it */ }
+}
+
+function apiBackupStatus_() {
+  var last = getSetting_(BACKUP_LAST_SETTING);
+  var scheduled = false;
+  try {
+    scheduled = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === BACKUP_HANDLER; });
+  } catch (e) { /* can't read triggers without authorisation */ }
+  return { lastBackupAt: last || '', scheduled: scheduled, keep: BACKUP_KEEP, folder: BACKUP_FOLDER_NAME };
+}
+
+function apiBackupNow_() {
+  var res = backupNow_();
+  return Object.assign(res, apiBackupStatus_());
 }
 
 /* ---------- settings ---------- */
@@ -1084,6 +1201,7 @@ function doGet(e) {
         if (!result) { result = apiDashboard_(); cacheSetJson_('dash', result); }
         break;
       case 'getOperatorKey': result = apiGetOperatorKey_(); break;
+      case 'backupStatus': result = apiBackupStatus_(); break;
       case 'listAccounts': result = apiListAccounts_(); break;
       case 'listArchive': result = apiListArchive_(); break;
       case 'workOrderDeletePreview': result = apiWorkOrderDeletePreview_(e.parameter.code); break;
@@ -1137,6 +1255,8 @@ function doPost(e) {
         case 'createPipe': result = apiCreatePipe_(body); break;
         case 'addReading': result = apiAddReading_(body); break;
         case 'addReadings': result = apiAddReadings_(body); break;
+        case 'requestVoid': result = apiRequestVoid_(body, acc); break;
+        case 'resolveVoid': result = apiResolveVoid_(body, acc); break;
         case 'addThicknessCheck': result = apiAddThicknessCheck_(body); break;
         case 'addNote': result = apiAddNote_(body); break;
         case 'addPhoto': result = apiAddPhoto_(body, pre); break;
@@ -1155,6 +1275,7 @@ function doPost(e) {
         case 'setAccountActive': result = apiSetAccountActive_(acc, body); break;
         case 'deleteAccount': result = apiDeleteAccount_(acc, body); break;
         case 'rotateOperatorKey': result = apiRotateOperatorKey_(); break;
+        case 'backupNow': result = apiBackupNow_(); break;
 
         case 'archiveWorkOrder': result = apiArchiveWorkOrder_(body, acc); break;
         case 'unarchiveWorkOrder': result = apiUnarchiveWorkOrder_(body); break;
@@ -1266,6 +1387,120 @@ function apiGetWorkOrderInfo_(code) {
   if (!wo) throw new Error('Work order not found: ' + code);
   var pipes = sheetToObjects_(SHEETS.PIPES).filter(function (p) { return String(p.WorkOrderCode) === code; });
   return { workOrder: wo, pipes: pipes };
+}
+
+/* ---------- voiding a measurement ----------
+ *
+ * A measurement is never edited and never deleted. It is struck out, with who asked, who
+ * agreed, when, and why — all of which stay in the sheet. The alternative people reach
+ * for when an app has no correction path is editing the spreadsheet by hand, which
+ * bypasses every check here and leaves no trace at all.
+ *
+ * Operators can only *request*: the reading goes on counting until the controller agrees.
+ * That's the deliberate shape — someone who has just logged an out-of-tolerance reading
+ * can't make it disappear, only ask. The controller voids directly, with no request step,
+ * since approving one's own request is theatre.
+ *
+ * Nothing is hidden at any point. A voided reading still appears in the reel's record,
+ * struck through, and the counts are surfaced the same way back-dated readings are — a
+ * pattern of voids from one operator should be as visible as a pattern of back-dating.
+ */
+var VOID_SHEETS = { reading: SHEETS.READINGS, thickness: SHEETS.THICKNESS };
+
+function voidSheetFor_(kind) {
+  var sheet = VOID_SHEETS[String(kind || 'reading')];
+  if (!sheet) throw new Error('Unknown record type: ' + kind);
+  return sheet;
+}
+
+function findVoidableRow_(kind, rowId) {
+  var sheetName = voidSheetFor_(kind);
+  var row = findRowByKey_(sheetName, 'RowId', String(rowId || '').trim());
+  if (!row) throw new Error('Record not found');
+  return { sheetName: sheetName, row: row };
+}
+
+function apiRequestVoid_(body, acc) {
+  var found = findVoidableRow_(body.kind, body.rowId);
+  if (found.row.VoidStatus === 'Void') throw new Error('That record is already voided');
+  var reason = String(body.reason || '').trim();
+  if (!reason) throw new Error('Give a reason for voiding this');
+
+  var isAdmin = acc && acc.Role === 'Admin';
+  var who = (body.operator && String(body.operator).trim()) || (acc && acc.Name) || (acc && acc.Username) || '';
+  var patch = { VoidReason: reason, VoidRequestedBy: who, VoidRequestedAt: nowIso_() };
+
+  if (isAdmin) {
+    // The controller is the approver, so there is nobody left to ask.
+    patch.VoidStatus = 'Void';
+    patch.VoidedBy = who;
+    patch.VoidedAt = nowIso_();
+  } else {
+    patch.VoidStatus = 'Requested';
+  }
+
+  updateRowByKey_(found.sheetName, 'RowId', found.row.RowId, patch);
+  afterVoidChange_(found.row.PipeCode, patch.VoidStatus === 'Void');
+  return { rowId: found.row.RowId, status: patch.VoidStatus };
+}
+
+function apiResolveVoid_(body, acc) {
+  // ACTION_ROLES already gates this to Admin. Checked again here on purpose: the whole
+  // point of the request step is that an operator can't strike out their own measurement,
+  // so it shouldn't rest on one layer remembering to say so.
+  if (!acc || acc.Role !== 'Admin') throw new Error('Only the controller can approve a void');
+  var found = findVoidableRow_(body.kind, body.rowId);
+  if (found.row.VoidStatus !== 'Requested') throw new Error('There is no pending void request on that record');
+  var who = (acc && acc.Name) || (acc && acc.Username) || '';
+
+  var patch;
+  if (body.approve) {
+    patch = { VoidStatus: 'Void', VoidedBy: who, VoidedAt: nowIso_() };
+  } else {
+    // Rejected: the record goes back to counting. The reason and who asked are kept, so
+    // the request itself remains part of the history rather than being erased.
+    patch = { VoidStatus: 'Rejected', VoidedBy: who, VoidedAt: nowIso_() };
+  }
+  updateRowByKey_(found.sheetName, 'RowId', found.row.RowId, patch);
+  afterVoidChange_(found.row.PipeCode, true);
+  return { rowId: found.row.RowId, status: patch.VoidStatus };
+}
+
+function isVoided_(r) { return r && r.VoidStatus === 'Void'; }
+
+/* A voided reading must stop being the reel's "last reading".
+ *
+ * The dashboard and the TV progress bars read values cached on the reel row rather than
+ * scanning the Readings sheet — that's what made them fast. So striking out the newest
+ * reading means recomputing those from what survives, or the board goes on showing the
+ * number that was just struck out.
+ */
+function afterVoidChange_(pipeCode, recompute) {
+  if (recompute) recomputeReelSummary_(String(pipeCode || '').trim());
+  cacheClearPipe_(String(pipeCode || '').trim());
+  cacheClearDash_();
+}
+
+function recomputeReelSummary_(pipeCode) {
+  if (!pipeCode) return;
+  var rows = rowsForPipe_(SHEETS.READINGS, pipeCode).filter(function (r) { return !isVoided_(r); });
+
+  var patch = { LastReadingAt: '', LastReadingType: '', LastReadingValue: '', LastReadingInTol: '',
+                BL_LastFootage: '', BR_LastFootage: '', CV_LastFootage: '' };
+  // Row order is entry order, so the last surviving row is the current state — the same
+  // rule backfillLastReadings_ uses, and the same one the live write path produces.
+  rows.forEach(function (r) {
+    patch.LastReadingAt = r.Timestamp;
+    patch.LastReadingType = r.Type;
+    patch.LastReadingValue = r.Value;
+    patch.LastReadingInTol = r.InTol;
+
+    if (r.Type !== 'OD' || r.Footage === '' || r.Footage === undefined) return;
+    var prefix = r.Section === 'Baseline' ? 'BL' : r.Section === 'Braidline' ? 'BR' : r.Section === 'Coverline' ? 'CV' : null;
+    if (prefix) patch[prefix + '_LastFootage'] = r.Footage;
+  });
+
+  updateRowByKey_(SHEETS.PIPES, 'PipeCode', pipeCode, patch);
 }
 
 // ---------- archive / delete ----------
