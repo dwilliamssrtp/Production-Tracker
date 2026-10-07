@@ -216,6 +216,7 @@ var ACTION_ROLES = {
   deleteAccount: ['Admin'],
   rotateOperatorKey: ['Admin'],
   backupStatus: ['Admin'],
+  adminPanel: ['Admin'],
   backupNow: ['Admin']
 };
 
@@ -228,7 +229,7 @@ var PUBLIC_ACTIONS = ['login', 'qrLogin'];
 // Bumped whenever Code.gs changes in a way that matters. Returned by ping and shown in
 // the site's header, because "is the backend I just edited actually deployed?" is
 // otherwise unanswerable from the outside — saving the editor does not publish it.
-var BUILD = '2026-10-07.1';
+var BUILD = '2026-10-07.2';
 
 var TIME_DRIFT_TOLERANCE_MIN = 5;
 
@@ -542,6 +543,17 @@ function apiBackupStatus_() {
     scheduled = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === BACKUP_HANDLER; });
   } catch (e) { /* can't read triggers without authorisation */ }
   return { lastBackupAt: last || '', scheduled: scheduled, keep: BACKUP_KEEP, folder: BACKUP_FOLDER_NAME };
+}
+
+// Everything the admin panel needs, in one request. It was three — accounts, operator
+// key, backup status — and on Apps Script the round trip dominates, so three requests to
+// fill one screen is three times the wait for no extra information.
+function apiAdminPanel_() {
+  return {
+    accounts: apiListAccounts_().accounts,
+    operatorKey: getSetting_(OPERATOR_KEY_SETTING),
+    backup: apiBackupStatus_()
+  };
 }
 
 function apiBackupNow_() {
@@ -1202,6 +1214,7 @@ function doGet(e) {
         break;
       case 'getOperatorKey': result = apiGetOperatorKey_(); break;
       case 'backupStatus': result = apiBackupStatus_(); break;
+      case 'adminPanel': result = apiAdminPanel_(); break;
       case 'listAccounts': result = apiListAccounts_(); break;
       case 'listArchive': result = apiListArchive_(); break;
       case 'workOrderDeletePreview': result = apiWorkOrderDeletePreview_(e.parameter.code); break;

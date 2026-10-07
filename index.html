@@ -393,7 +393,7 @@ var STATE = {
   tvPage: 0, tvPageTimer: null, tvDrillWO: null, tvDrillPipe: null, tvSection: null, tvPipeData: null,
   pdCode: null, pdSection: null, pdData: null,
   loginError: '', operatorKey: '', accounts: null, adminError: '',
-  rpPipe: null, rpData: null, rpIndex: null, rpLoadedAt: null, backup: null,
+  rpPipe: null, rpData: null, rpIndex: null, rpLoadedAt: null, backup: null, photosExpanded: null,
   tagReturn: null, archive: null
 };
 
@@ -440,6 +440,9 @@ function apiPost(action, body){
     if (!j.ok) return handleApiFailure(j);
     noteApiSuccess(j);
     LAST_ENVELOPE = j;
+    // A write can change what the board shows, so the shared copy must not outlive it —
+    // otherwise your own change could sit behind a cached dashboard for up to 10 seconds.
+    invalidateDashboard();
     return j.data;
   }).catch(function(err){ noteApiFailure(err); throw err; });
 }
@@ -545,6 +548,35 @@ function checkConnection(){
  * on a shop tablet, and it resets scroll position and kills any hover. Compare first;
  * only redraw when something actually moved.
  */
+/* One dashboard payload, shared by every view built from it.
+ *
+ * The Dashboard, Timers, the Reports picker and the TV board all render from the same
+ * 'dashboard' call. Each used to fetch its own copy, so flicking between them meant a
+ * fresh round trip every time for data that hadn't changed — and on Apps Script a round
+ * trip is most of a second whatever it returns, so tab switching felt like loading.
+ *
+ * Held for DASH_FRESH_MS, which is deliberately shorter than the 20-second poll: a poll
+ * is always past it and so always fetches, while a tab switch moments later does not.
+ * Concurrent callers share one request rather than racing, and any write drops it so your
+ * own changes are never behind it.
+ */
+var DASH_FRESH_MS = 10000;
+var DASH_CACHE = { at: 0, data: null, inflight: null };
+
+function getDashboard(){
+  if (DASH_CACHE.data && (Date.now() - DASH_CACHE.at) < DASH_FRESH_MS) {
+    return Promise.resolve(DASH_CACHE.data);
+  }
+  if (DASH_CACHE.inflight) return DASH_CACHE.inflight;
+  DASH_CACHE.inflight = apiGet('dashboard').then(function(d){
+    DASH_CACHE.at = Date.now(); DASH_CACHE.data = d; DASH_CACHE.inflight = null;
+    return d;
+  }).catch(function(err){ DASH_CACHE.inflight = null; throw err; });
+  return DASH_CACHE.inflight;
+}
+
+function invalidateDashboard(){ DASH_CACHE.at = 0; DASH_CACHE.data = null; }
+
 var POLL_GUARD = {};
 function pollGuard(key){
   if (!POLL_GUARD[key]) POLL_GUARD[key] = {inFlight: false, lastJson: null};
@@ -945,11 +977,13 @@ function viewAdmin(){
 function bindAdmin(){ loadAdmin(); }
 
 function loadAdmin(){
-  Promise.all([apiGet('listAccounts'), apiGet('getOperatorKey'), apiGet('backupStatus')])
-    .then(function(res){
-      STATE.accounts = res[0].accounts;
-      STATE.operatorKey = res[1].key;
-      STATE.backup = res[2];
+  // One request for the whole panel. It was three, and on Apps Script the round trip is
+  // the cost, not the work — so three calls to fill one screen was three times the wait.
+  apiGet('adminPanel')
+    .then(function(d){
+      STATE.accounts = d.accounts;
+      STATE.operatorKey = d.operatorKey;
+      STATE.backup = d.backup;
       renderAdmin();
     })
     .catch(function(err){
@@ -2261,15 +2295,27 @@ function photoThumbUrl(p){
   return p.DriveFileId ? ('https://drive.google.com/thumbnail?id='+encodeURIComponent(p.DriveFileId)+'&sz=w300') : p.DriveUrl;
 }
 
+/* Every thumbnail here is a request to Google Drive, and switching back to this tab
+ * rebuilds them all. Twenty of those is a slow tab even though the markup itself renders
+ * instantly. Six by default, the rest on request — `loading="lazy"` already spares the
+ * ones below the fold, but not the ones in view.
+ */
+var PHOTO_PREVIEW_N = 6;
+
 function photosListHtml(sec){
   var all = STATE.photos.filter(function(p){ return p.Section===sec; }).sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
   if (!all.length) return '<p class="muted">No photos yet.</p>';
-  var photos = all.slice(0,20);
+  var showAll = STATE.photosExpanded === sec;
+  var photos = showAll ? all.slice(0, 40) : all.slice(0, PHOTO_PREVIEW_N);
   return photos.map(function(p){
     return '<a class="photoitem" href="'+esc(p.DriveUrl)+'" target="_blank" rel="noopener">' +
       '<img class="thumb" loading="lazy" src="'+esc(photoThumbUrl(p))+'" onerror="this.style.display=\'none\'">' +
       '<span>'+esc(p.Caption||fmtTime(p.Timestamp))+'</span></a>';
-  }).join('') + (all.length>20 ? '<p class="muted" style="margin-top:4px;width:100%">Showing the latest 20 of '+all.length+'.</p>' : '');
+  }).join('') +
+  (all.length > photos.length
+    ? '<p class="muted" style="margin-top:4px;width:100%">Showing '+photos.length+' of '+all.length+'. ' +
+      '<button class="btn sm" id="showAllPhotosBtn">Show all</button></p>'
+    : '');
 }
 
 var prodTickTimer = null;
@@ -2370,6 +2416,8 @@ function bindOperator(){
   E('backHomeBtn').addEventListener('click', function(){ go('home'); });
   qsa('.tabs button').forEach(function(b){ b.addEventListener('click', function(){ go('operator', {pipeCode: STATE.pipeCode, section: b.dataset.sec}); }); });
   bindVoidButtons(E('app'));
+  var showAllPhotos = E('showAllPhotosBtn');
+  if (showAllPhotos) showAllPhotos.addEventListener('click', function(){ STATE.photosExpanded = STATE.section; render(); });
 
   var sec = STATE.section, prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
 
@@ -2551,7 +2599,7 @@ function bindDashboard(){
 function loadDashboard(){
   if (pollBusy('dash')) return;
   pollStart('dash');
-  apiGet('dashboard').then(function(d){
+  getDashboard().then(function(d){
     // serverTime changes every poll, so compare everything else — otherwise nothing is
     // ever "unchanged" and the guard would never do anything.
     if (pollChanged('dash', {a: d.active, r: d.recentComplete})) renderDashboard(d);
@@ -2658,7 +2706,7 @@ function bindTimers(){
 function loadTimers(){
   if (pollBusy('timers')) return;
   pollStart('timers');
-  apiGet('dashboard').then(function(d){
+  getDashboard().then(function(d){
     if (pollChanged('timers', d.active)) renderTimers(d);
   })
     .catch(function(err){ if (!err.sessionExpired){ var r = E('timersRoot'); if (r) r.innerHTML = '<p class="flag">'+esc(err.message)+'</p>'; } })
@@ -3034,7 +3082,7 @@ function bindWoDashboard(){
 }
 
 function loadWoDashboard(){
-  apiGet('dashboard').then(function(d){
+  getDashboard().then(function(d){
     var all = d.active.concat(d.recentComplete);
     var g = all.filter(function(x){ return x.workOrderCode === STATE.workOrderCode; })[0];
     if (!g){
@@ -3274,7 +3322,7 @@ function bindReports(){
 
 function loadReportIndex(){
   STATE.rpPipe = null; STATE.rpData = null;
-  apiGet('dashboard').then(function(d){ STATE.rpIndex = d; renderReportIndex(); })
+  getDashboard().then(function(d){ STATE.rpIndex = d; renderReportIndex(); })
     .catch(function(err){
       if (err && err.sessionExpired) return;
       var r = E('rpRoot'); if (r) r.innerHTML = '<p class="flag">'+esc(err.message)+'</p>';
@@ -3744,7 +3792,7 @@ function loadTVBoard(){
   }
   if (pollBusy('tv')) return;
   pollStart('tv');
-  apiGet('dashboard').then(function(d){
+  getDashboard().then(function(d){
     STATE.tvLastData = d;
     // The board also redraws on page rotation, which isn't driven by new data — so the
     // page index is part of what "changed" means here.
