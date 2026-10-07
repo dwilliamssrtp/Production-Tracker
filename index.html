@@ -2136,11 +2136,15 @@ function thicknessCheckCardHtml(sec){
   '</section>';
 }
 
+// Shared by the operator's own list and the report, so the void cell adapts: an operator
+// gets a Void button that raises a request, the controller gets Approve / Reject.
 function checksTableHtml(checks){
-  return '<table style="margin-top:10px"><thead><tr><th class="l">Time</th><th>Position</th><th>Operator</th><th>OD</th><th>Avg wall</th><th>Computed ID</th><th>Ovality</th></tr></thead><tbody>' +
+  return '<table style="margin-top:10px"><thead><tr><th class="l">Time</th><th>Position</th><th>Operator</th><th>OD</th><th>Avg wall</th><th>Computed ID</th><th>Ovality</th><th class="l">Void</th></tr></thead><tbody>' +
     checks.map(function(c){
-      return '<tr><td class="l">'+esc(fmtTime(c.Timestamp))+'</td><td>'+esc(c.Position)+'</td><td>'+esc(c.Operator)+'</td>' +
-        '<td class="num">'+esc(c.OD)+'"</td><td class="num">'+esc(c.AvgThickness)+'"</td><td class="num">'+esc(c.ComputedID)+'"</td><td class="num">'+esc(c.Ovality)+'"</td></tr>';
+      var voided = isVoid(c);
+      return '<tr'+(voided?' class="voided"':'')+'><td class="l">'+esc(fmtTime(c.Timestamp))+'</td><td>'+esc(c.Position)+'</td><td>'+esc(c.Operator)+'</td>' +
+        '<td class="num">'+esc(c.OD)+'"</td><td class="num">'+esc(c.AvgThickness)+'"</td><td class="num">'+esc(c.ComputedID)+'"</td><td class="num">'+esc(c.Ovality)+'"</td>' +
+        '<td class="l">'+rpVoidCell(c, 'thickness')+'</td></tr>';
     }).join('') + '</tbody></table>';
 }
 
@@ -3497,10 +3501,14 @@ function rpVoidCell(r, kind){
            (r.VoidedBy ? ' <i>('+esc(r.VoidedBy)+')</i>' : '')+'</span>';
   }
   if (isVoidPending(r)){
+    // Approve/Reject only for the controller — this cell is shared with the operator's own
+    // thickness list, and the decision is not theirs to make.
     return '<span class="suspect">'+esc(r.VoidReason||'void requested')+
-      (r.VoidRequestedBy ? ' <i>('+esc(r.VoidRequestedBy)+')</i>' : '')+'</span><br>' +
-      '<button class="btn sm danger" data-voidok="'+esc(r.RowId)+'" data-kind="'+kind+'">Approve</button> ' +
-      '<button class="btn sm" data-voidno="'+esc(r.RowId)+'" data-kind="'+kind+'">Reject</button>';
+      (r.VoidRequestedBy ? ' <i>('+esc(r.VoidRequestedBy)+')</i>' : '')+'</span>' +
+      (isAdmin()
+        ? '<br><button class="btn sm danger" data-voidok="'+esc(r.RowId)+'" data-kind="'+kind+'">Approve</button> ' +
+          '<button class="btn sm" data-voidno="'+esc(r.RowId)+'" data-kind="'+kind+'">Reject</button>'
+        : '');
   }
   if (r.VoidStatus === 'Rejected'){
     return '<span class="muted" title="Void request was turned down">request rejected</span>';
@@ -3545,6 +3553,9 @@ function bindVoidDecisions(root){
 // point, one column per check. This is the part the summary table (avg/ID/ovality)
 // throws away, and it's what shows a die running consistently off-centre.
 function rpThicknessPointsHtml(sec, checks){
+  // A struck-out check is still listed in the summary above, with its reason — but it
+  // shouldn't sit in the point-by-point comparison, which is read as the wall profile.
+  checks = checks.filter(function(c){ return !isVoid(c); });
   if (!checks.length) return '';
   var n = pointCount(sec);
   var shown = checks.slice(-REPORT_MAX_CHECK_COLS);
