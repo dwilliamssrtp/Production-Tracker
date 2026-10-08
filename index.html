@@ -44,6 +44,44 @@
   main{max-width:960px;margin:0 auto;padding:14px 16px 60px;}
 
   section.card{border:1px solid var(--line);border-radius:5px;padding:12px 14px;margin-bottom:14px;background:var(--field);}
+
+  /* Collapsible cards. The heading is the whole hit target, padded out so it's usable
+     with a gloved finger on a tablet rather than a 11px pixel-hunt. */
+  section.card.coll>h2{cursor:pointer;display:flex;align-items:center;gap:7px;
+    user-select:none;-webkit-user-select:none;padding:3px 0 5px;margin-bottom:7px;}
+  section.card.coll>h2::before{content:"\25BC";font-size:8px;line-height:1;flex:none;
+    transition:transform .12s ease;}
+  section.card.coll.shut>h2::before{transform:rotate(-90deg);}
+  section.card.coll.shut>h2{margin-bottom:0;border-bottom:none;}
+  section.card.coll.shut{padding-bottom:8px;}
+  section.card.coll>h2 .cnt{margin-left:auto;font:600 9px/1 "Segoe UI",Arial,sans-serif;
+    color:var(--mut);letter-spacing:.04em;text-transform:none;}
+
+  /* WHICH REEL AM I ON.
+     A reading logged against the wrong reel is a scrap-level mistake and nothing
+     downstream catches it, so this is deliberately the loudest thing on the screen. */
+  .nowreel{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;
+    padding:10px 12px;border:1px solid var(--accent);border-left:6px solid var(--accent);
+    border-radius:5px;background:var(--band);}
+  .nowreel .lbl{font:700 8.5px/1 "Segoe UI",Arial,sans-serif;text-transform:uppercase;
+    letter-spacing:.1em;color:var(--mut);}
+  .nowreel .code{font:800 21px/1.1 "Segoe UI",Arial,sans-serif;letter-spacing:.01em;
+    color:var(--accent);font-variant-numeric:tabular-nums;margin:3px 0 2px;}
+  .nowreel .sub{font-size:10.5px;color:var(--mut);}
+
+  .reelbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px;}
+  .reelbar .lbl{font:700 8.5px/1 "Segoe UI",Arial,sans-serif;text-transform:uppercase;
+    letter-spacing:.09em;color:var(--mut);margin-right:2px;}
+  .reelchip{font:700 12px/1 "Segoe UI",Arial,sans-serif;font-variant-numeric:tabular-nums;
+    padding:8px 11px;border-radius:4px;border:1px solid var(--line);background:var(--field);
+    color:var(--ink);cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
+  .reelchip .dn{font:600 9px/1 "Segoe UI",Arial,sans-serif;color:var(--mut);letter-spacing:.03em;}
+  .reelchip:hover{border-color:var(--accent);}
+  .reelchip.here{background:var(--accent);border-color:var(--accent);color:#fff;cursor:default;
+    padding:9px 13px;box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--accent);}
+  .reelchip.here .dn{color:#fff;opacity:.85;}
+  .reelchip.here:hover{border-color:var(--accent);}
+  .reelchip.done{border-color:var(--good);}
   .grid{display:grid;gap:8px 12px;}
   .g2{grid-template-columns:1fr 1fr;}
   .g3{grid-template-columns:repeat(3,1fr);}
@@ -278,6 +316,11 @@
     body.printing-report #app{position:absolute;top:0;left:0;width:100%;max-width:none;padding:0;}
     body.printing-report .card{break-inside:avoid;page-break-inside:avoid;border-color:#bbb;}
     body.printing-report .rp-sec{break-before:page;page-break-before:always;}
+    /* A card the operator happened to shut must never quietly drop out of a printout —
+       collapsing is a screen convenience, not a decision about what the record contains. */
+    .cardbody{display:block !important;}
+    section.card.coll>h2::before{display:none;}
+    section.card.coll>h2 .cnt{display:none;}
     body.printing-report table{font-size:9px;}
     body.printing-report .kpi{border-color:#bbb;}
 
@@ -1004,6 +1047,78 @@ function E(id){ return document.getElementById(id); }
 function esc(s){ return String(s===undefined||s===null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function qs(sel, root){ return (root||document).querySelector(sel); }
 function qsa(sel, root){ return Array.prototype.slice.call((root||document).querySelectorAll(sel)); }
+
+/* ===================== COLLAPSIBLE CARDS =====================
+ *
+ * The operator view is one long scroll — references, readings, thickness, material, notes,
+ * photos — and on a tablet most of it is in the way of the one thing being entered right
+ * now. Any card built with card() can be shut, and the choice is remembered per device so
+ * it stays shut tomorrow.
+ *
+ * The body is HIDDEN, never removed from the DOM. That matters more than it looks: every
+ * input keeps its id, so the bind functions still find their elements, a half-typed value
+ * survives a collapse, and no code anywhere has to care whether a card happens to be open.
+ */
+function readShutCards(){
+  try { return JSON.parse(lsGet('srtp_shut_cards') || '{}') || {}; } catch (e) { return {}; }
+}
+var CARD_SHUT = readShutCards();
+
+/* The three long reference cards on the Setup tab start shut — they are the bulk of the
+ * clutter and get read occasionally rather than continuously. Everything else starts open,
+ * so nothing an operator depends on vanishes without them asking for it. */
+var CARD_SHUT_DEFAULT = {'setup-Baseline':1, 'setup-Braidline':1, 'setup-Coverline':1};
+
+function cardIsShut(key){
+  return CARD_SHUT[key] !== undefined ? !!CARD_SHUT[key] : !!CARD_SHUT_DEFAULT[key];
+}
+function setCardShut(key, shut){
+  CARD_SHUT[key] = shut ? 1 : 0;
+  lsSet('srtp_shut_cards', JSON.stringify(CARD_SHUT));
+}
+
+/* A card that can be shut. `note` is a short line shown on the right of the heading so a
+ * shut card still says what is inside it — otherwise collapsing turns the page into a list
+ * of titles with no way to tell which one holds the thing you want. */
+function card(key, title, bodyHtml, note){
+  var shut = cardIsShut(key);
+  return '<section class="card coll'+(shut ? ' shut' : '')+'" data-card="'+esc(key)+'">' +
+    '<h2>'+title+(note ? '<span class="cnt">'+note+'</span>' : '')+'</h2>' +
+    '<div class="cardbody"'+(shut ? ' style="display:none"' : '')+'>'+bodyHtml+'</div>' +
+  '</section>';
+}
+
+function setCardOpenState(section, shut){
+  section.classList.toggle('shut', shut);
+  var body = section.querySelector('.cardbody');
+  if (body) body.style.display = shut ? 'none' : '';
+  setCardShut(section.dataset.card, shut);
+}
+
+function bindCollapsibles(root){
+  qsa('section.card.coll>h2', root).forEach(function(h){
+    h.addEventListener('click', function(){
+      setCardOpenState(h.parentElement, !h.parentElement.classList.contains('shut'));
+      refreshExpandAll();
+    });
+  });
+  var all = E('expandAllBtn');
+  if (all) all.addEventListener('click', function(){
+    qsa('section.card.coll.shut').forEach(function(s){ setCardOpenState(s, false); });
+    refreshExpandAll();
+  });
+  refreshExpandAll();
+}
+
+/* An escape hatch. Collapse enough cards and the screen stops explaining itself; without
+ * this an operator who shut something by accident has to find it again to undo it. */
+function refreshExpandAll(){
+  var btn = E('expandAllBtn');
+  if (!btn) return;
+  var n = qsa('section.card.coll.shut').length;
+  btn.style.display = n ? '' : 'none';
+  btn.textContent = 'Open ' + n + ' closed ' + (n === 1 ? 'section' : 'sections');
+}
 function nowLocalInputValue(){
   var d = new Date(), pad = function(n){ return String(n).padStart(2,'0'); };
   return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
@@ -2110,17 +2225,49 @@ function openTagFor(pipeCode, returnTo){
 }
 
 /* ============================= OPERATOR ============================= */
+/* The other reels on this work order, as one-tap chips.
+ *
+ * Operators run several reels off a single work order and the only way between them was
+ * Home, then retyping a reel code — so in practice they didn't, and readings piled up
+ * against whichever reel was already open. Each chip says how much of that reel is done,
+ * so a glance is enough to pick the one still running.
+ *
+ * The chip for the current reel is not a button. There is nothing to navigate to, and a
+ * pressable-looking element that does nothing invites a second press. */
+function reelSwitcherHtml(pipe){
+  var sibs = (STATE.siblingPipes || []).filter(function(p){ return p && p.PipeCode; });
+  if (sibs.length < 2) return '';   // nothing to switch between
+
+  return '<div class="reelbar">' +
+    '<span class="lbl">Reels on this work order</span>' +
+    sibs.map(function(p){
+      var here = String(p.PipeCode) === String(pipe.PipeCode);
+      var done = ['BL','BR','CV'].filter(function(k){ return p[k+'_Status'] === 'Complete'; }).length;
+      var note = here ? 'on this reel' : (done === 3 ? 'all done' : done + '/3 done');
+      return '<button class="reelchip'+(here ? ' here' : (done === 3 ? ' done' : ''))+'"' +
+        (here ? ' aria-current="true" disabled' : ' data-reel="'+esc(p.PipeCode)+'"')+'>' +
+        esc(p.PipeCode)+'<span class="dn">'+note+'</span></button>';
+    }).join('') +
+  '</div>';
+}
+
 function viewOperator(){
   var pipe = STATE.pipe, wo = STATE.workOrder, sec = STATE.section;
   var openProblems = STATE.problemReports.filter(function(p){ return p.Status==='Open'; }).length;
 
   var header = '' +
-  '<div class="row" style="margin-bottom:8px">' +
-    '<div><b>'+esc(pipe.PipeCode)+'</b> <span class="muted">work order '+esc(pipe.WorkOrderCode)+' &middot; '+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+'</span></div>' +
+  '<div class="nowreel">' +
+    '<div>' +
+      '<div class="lbl">You are logging to</div>' +
+      '<div class="code">'+esc(pipe.PipeCode)+'</div>' +
+      '<div class="sub">work order '+esc(pipe.WorkOrderCode)+' &middot; '+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+'</div>' +
+    '</div>' +
     '<span class="spacer"></span>' +
     (openProblems ? '<span class="pill" style="background:var(--crit)">'+openProblems+' open issue'+(openProblems===1?'':'s')+'</span>' : '') +
+    '<button class="btn sm" id="expandAllBtn" style="display:none"></button>' +
     '<button class="btn sm" id="backHomeBtn">'+(isAdmin() ? 'Home' : 'Done — another reel')+'</button>' +
   '</div>' +
+  reelSwitcherHtml(pipe) +
   '<div class="tabs">' +
     '<button data-sec="Setup" class="'+(sec==='Setup'?'active':'')+'">Setup Reference</button>' +
     ['Baseline','Braidline','Coverline'].map(function(s){
@@ -2138,8 +2285,7 @@ function viewOperator(){
 
   return header +
 
-  '<section class="card">' +
-    '<h2>Reference targets</h2>' +
+  card('ref-'+sec, 'Reference targets',
     referenceTargetsHtml(wo, sec) +
     '<div class="row" style="margin-top:10px" id="completeRow">' +
       '<span class="muted">Section status: '+pillHtml(status)+'</span>' +
@@ -2151,43 +2297,46 @@ function viewOperator(){
       '<div class="fld" style="max-width:160px"><label>Actual length (ft)</label><input id="completeLength" type="number" step="1"></div>' +
       '<button class="btn sm" id="cancelCompleteBtn" style="align-self:flex-end">Cancel</button>' +
       '<button class="btn sm pri" id="confirmCompleteBtn" style="align-self:flex-end">Confirm complete</button>' +
-    '</div>' : '') +
-  '</section>' +
+    '</div>' : ''),
+    esc(status || '')) +
 
   productionTimerCardHtml(wo, pipe, sec) +
 
-  '<section class="card">' +
-    '<h2>Hourly reading</h2>' +
+  card('read-'+sec, 'Hourly reading',
     '<div class="grid g4">' +
       '<div class="fld"><label>Operator</label><input id="opName" value="'+esc(getOperatorName())+'" placeholder="Name"></div>' +
       '<div class="fld"><label>Time</label><input id="rdTime" type="datetime-local" value="'+nowLocalInputValue()+'" data-touched="0"></div>' +
       (sec==='Braidline' ? '<div class="fld"><label>Pitch (in)</label><input id="rdPitch" type="number" step="0.01"></div>' : '') +
       '<div class="fld"><label>OD (in)</label><input id="rdOD" type="number" step="0.001"></div>' +
-      '<div class="fld"><label>Footage marker (ft)</label><input id="rdFootage" type="number" step="1" placeholder="optional"></div>' +
+      '<div class="fld"><label>Footage marker (ft)</label><input id="rdFootage" type="number" step="1"></div>' +
     '</div>' +
     '<div class="row" style="margin-top:8px"><button class="btn pri" id="submitReadingBtn">Log reading</button></div>' +
-    readingsTableHtml(sec) +
-  '</section>' +
+    readingsTableHtml(sec),
+    countNote(STATE.readings.filter(function(r){ return r.Section===sec && !isVoid(r); }).length, 'reading')) +
 
   (sec !== 'Braidline' ? thicknessCheckCardHtml(sec) : '') +
   (sec !== 'Braidline' ? materialUsageCardHtml(sec) : '') +
 
-  '<section class="card">' +
-    '<h2>Notes</h2>' +
+  card('notes-'+sec, 'Notes',
     '<div class="row"><textarea id="noteText" style="flex:1" placeholder="Observation, deviation, disposition..."></textarea></div>' +
     '<div class="row" style="margin-top:6px"><button class="btn" id="submitNoteBtn">Add note</button></div>' +
-    notesListHtml(sec) +
-  '</section>' +
+    notesListHtml(sec),
+    countNote(STATE.notes.filter(function(n){ return n.Section===sec; }).length, 'note')) +
 
-  '<section class="card">' +
-    '<h2>Photos</h2>' +
+  card('photos-'+sec, 'Photos',
     '<div class="row">' +
       '<input id="photoFile" type="file" accept="image/*" capture="environment">' +
       '<input id="photoCaption" placeholder="Caption (optional)" style="flex:1">' +
       '<button class="btn" id="submitPhotoBtn">Upload</button>' +
     '</div>' +
-    '<div class="photolist" style="margin-top:8px">' + photosListHtml(sec) + '</div>' +
-  '</section>';
+    '<div class="photolist" style="margin-top:8px">' + photosListHtml(sec) + '</div>',
+    countNote(STATE.photos.filter(function(p){ return p.Section===sec; }).length, 'photo'));
+}
+
+// Heading notes for shut cards: "3 readings", or nothing at all when there are none —
+// "0 readings" on a card an operator hasn't reached yet reads like a problem.
+function countNote(n, noun){
+  return n ? (n + ' ' + noun + (n === 1 ? '' : 's')) : '';
 }
 
 // Actual ft/min from footage markers entered alongside OD readings: an overall average
@@ -2272,20 +2421,21 @@ function braidlineSpeedCardHtml(wo, sec){
   '</section>';
 }
 
+/* Four stacked reference cards was the worst of the clutter: the whole recipe for all three
+ * lines, when an operator is standing at one of them. The section cards default to shut
+ * (see CARD_SHUT_DEFAULT) so this opens as a short list you pick from. */
 function setupReferenceHtml(wo){
   return '' +
-  '<section class="card">' +
-    '<h2>Work order</h2>' +
+  card('setup-wo', 'Work order',
     '<div class="grid g4">' +
       '<div class="kpi"><b>Customer</b><span style="font-size:14px">'+fmtTol(wo.Customer)+'</span></div>' +
       '<div class="kpi"><b>Product code</b><span style="font-size:14px">'+fmtTol(wo.ProductCode)+'</span></div>' +
       '<div class="kpi"><b>Pipe size</b><span style="font-size:14px">'+fmtTol(wo.PipeSize)+'</span></div>' +
       '<div class="kpi"><b>Project length</b><span>'+fmtTol(wo.ProjectLength)+'</span><i>ft total, across all reels</i></div>' +
-    '</div>' +
-  '</section>' +
-  '<section class="card"><h2>Baseline reference</h2>' + referenceTargetsHtml(wo, 'Baseline') + '</section>' +
-  '<section class="card"><h2>Braidline reference</h2>' + referenceTargetsHtml(wo, 'Braidline') + '</section>' +
-  '<section class="card"><h2>Coverline reference</h2>' + referenceTargetsHtml(wo, 'Coverline') + '</section>';
+    '</div>') +
+  ['Baseline','Braidline','Coverline'].map(function(s){
+    return card('setup-'+s, s+' reference', referenceTargetsHtml(wo, s), 'tap to open');
+  }).join('');
 }
 
 function referenceTargetsHtml(wo, sec){
@@ -2513,8 +2663,7 @@ function thicknessCheckCardHtml(sec){
   var n = pointCount(sec);
   var checks = STATE.thicknessChecks.filter(function(c){ return c.Section===sec; })
     .sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
-  return '<section class="card">' +
-    '<h2>Thickness check ('+n+'-point) &mdash; Start / End</h2>' +
+  return card('thick-'+sec, 'Thickness check ('+n+'-point) &mdash; Start / End',
     '<div class="grid g4">' +
       '<div class="fld"><label>Position</label><select id="tcPosition"><option>Start</option><option>End</option></select></div>' +
       '<div class="fld"><label>Operator</label><input id="tcOperator" value="'+esc(getOperatorName())+'"></div>' +
@@ -2530,8 +2679,8 @@ function thicknessCheckCardHtml(sec){
       '<div class="kpi"><b>Points entered</b><span id="tcCount">0 / '+n+'</span></div>' +
     '</div>' +
     '<div class="row" style="margin-top:8px"><button class="btn pri" id="submitCheckBtn">Save thickness check</button></div>' +
-    (checks.length ? checksTableHtml(checks) : '<p class="muted">No thickness checks recorded yet.</p>') +
-  '</section>';
+    (checks.length ? checksTableHtml(checks) : '<p class="muted">No thickness checks recorded yet.</p>'),
+    countNote(checks.filter(function(c){ return !isVoid(c); }).length, 'check'));
 }
 
 // Shared by the operator's own list and the report, so the void cell adapts: an operator
@@ -2550,8 +2699,7 @@ var MATERIAL_SUGGESTIONS = ['Nylon 290 - Base', 'PP - Cover', 'PPMBUVYL - Yellow
 
 function materialUsageCardHtml(sec){
   var rows = STATE.materialUsage.filter(function(m){ return m.Section===sec; }).sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
-  return '<section class="card">' +
-    '<h2>Material usage</h2>' +
+  return card('mat-'+sec, 'Material usage',
     '<p class="muted" style="margin-top:0">Log each material load\'s start and end weight (e.g. resin box/gaylord change).</p>' +
     '<div class="grid g4">' +
       '<div class="fld"><label>Material</label><input id="matName" list="matSuggestions" placeholder="e.g. Nylon 290 - Base"></div>' +
@@ -2566,8 +2714,8 @@ function materialUsageCardHtml(sec){
     '</div>' +
     '<datalist id="matSuggestions">' + MATERIAL_SUGGESTIONS.map(function(m){ return '<option value="'+esc(m)+'">'; }).join('') + '</datalist>' +
     '<div class="row" style="margin-top:8px"><button class="btn pri" id="submitMaterialBtn">Log material usage</button></div>' +
-    (rows.length ? materialSummaryHtml(rows) + materialTableHtml(rows) : '<p class="muted">No material usage logged yet.</p>') +
-  '</section>';
+    (rows.length ? materialSummaryHtml(rows) + materialTableHtml(rows) : '<p class="muted">No material usage logged yet.</p>'),
+    countNote(rows.length, 'load'));
 }
 
 function materialSummaryHtml(rows){
@@ -2829,6 +2977,17 @@ function liveThicknessCalc(sec){
 function bindOperator(){
   E('backHomeBtn').addEventListener('click', function(){ go('home'); });
   qsa('.tabs button').forEach(function(b){ b.addEventListener('click', function(){ go('operator', {pipeCode: STATE.pipeCode, section: b.dataset.sec}); }); });
+
+  bindCollapsibles(E('app'));
+
+  // Switching reels keeps the section, so moving from R1 to R2 mid-Braidline lands on
+  // Braidline rather than making them find it again. go() loads the reel it doesn't have.
+  qsa('.reelchip[data-reel]').forEach(function(b){
+    b.addEventListener('click', function(){
+      go('operator', {pipeCode: b.dataset.reel, section: STATE.section});
+    });
+  });
+
   bindVoidButtons(E('app'));
   var showAllPhotos = E('showAllPhotosBtn');
   if (showAllPhotos) showAllPhotos.addEventListener('click', function(){ STATE.photosExpanded = STATE.section; render(); });
