@@ -97,3 +97,47 @@ select
   (select has_function_privilege('anon', p.oid, 'execute') from pg_proc p
     join pg_namespace n on n.oid=p.pronamespace
     where n.nspname='public' and p.proname='api_add_thickness_check')         as anon_can_call;
+
+-- ---------------------------------------------------------------------------
+-- Re-harden. REQUIRED, not optional.
+-- ---------------------------------------------------------------------------
+-- CREATE OR REPLACE FUNCTION drops any setting the new definition doesn't restate, so
+-- replacing a function silently un-pins its search_path. Supabase's advisor caught exactly
+-- that after this file first ran: _section_progress, _prod_timing, _thickness_json and
+-- _effective_target_length were all left mutable. This is the same loop as 06_harden.sql;
+-- every migration that replaces a function ends with it.
+do $$
+declare r record;
+begin
+  for r in
+    select p.oid::regprocedure as fn
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and not exists (select 1 from unnest(coalesce(p.proconfig, '{}')) c
+                      where c = 'search_path=public, extensions')
+  loop
+    execute format('alter function %s set search_path = public, extensions', r.fn);
+  end loop;
+end $$;
+
+do $$
+declare r record;
+begin
+  for r in
+    select p.oid::regprocedure as fn
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname like '\_%'
+  loop
+    execute format('revoke all on function %s from public, anon, authenticated', r.fn);
+  end loop;
+end $$;
+
+-- Expect both 0.
+select
+  (select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname='public'
+      and not exists (select 1 from unnest(coalesce(p.proconfig,'{}')) c
+                      where c='search_path=public, extensions'))   as wrong_search_path,
+  (select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname='public' and p.proname like '\_%'
+      and has_function_privilege('anon', p.oid,'execute'))         as helpers_anon_can_call;

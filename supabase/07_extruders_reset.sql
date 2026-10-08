@@ -431,3 +431,47 @@ select
     where n.nspname='public' and p.proname like '\_%'
       and has_function_privilege('anon', p.oid, 'execute'))                  as helpers_anon_can_call,
   (select relrowsecurity from pg_class where relname='extruder_runs')        as extruder_rls;
+
+-- ---------------------------------------------------------------------------
+-- Re-harden. REQUIRED, not optional.
+-- ---------------------------------------------------------------------------
+-- This file replaces _recompute_reel_summary and creates _extruder_json and
+-- _reset_section_rows, none of which declare a search_path. CREATE OR REPLACE also drops
+-- any setting the new definition doesn't restate, so replacing a function silently
+-- un-pins it. Same loop as 06_harden.sql; every migration that touches a function ends
+-- with it.
+do $$
+declare r record;
+begin
+  for r in
+    select p.oid::regprocedure as fn
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and not exists (select 1 from unnest(coalesce(p.proconfig, '{}')) c
+                      where c = 'search_path=public, extensions')
+  loop
+    execute format('alter function %s set search_path = public, extensions', r.fn);
+  end loop;
+end $$;
+
+do $$
+declare r record;
+begin
+  for r in
+    select p.oid::regprocedure as fn
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname like '\_%'
+  loop
+    execute format('revoke all on function %s from public, anon, authenticated', r.fn);
+  end loop;
+end $$;
+
+-- Expect both 0.
+select
+  (select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname='public'
+      and not exists (select 1 from unnest(coalesce(p.proconfig,'{}')) c
+                      where c='search_path=public, extensions'))   as wrong_search_path,
+  (select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname='public' and p.proname like '\_%'
+      and has_function_privilege('anon', p.oid,'execute'))         as helpers_anon_can_call;
