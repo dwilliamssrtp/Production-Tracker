@@ -654,7 +654,7 @@ function supaRoute(action, a){
     case 'addThicknessCheck': return ['api_add_thickness_check', {
       p_token: t, p_pipe_code: a.pipeCode, p_section: a.section, p_position: a.position || '',
       p_operator: a.operator || '', p_timestamp: a.timestamp,
-      p_od: supaNum(a.od), p_points: supaNums(a.points)}];
+      p_od: supaNum(a.od), p_points: supaNums(a.points), p_layer: a.layer || ''}];
     case 'addNote': return ['api_add_note', {
       p_token: t, p_pipe_code: a.pipeCode, p_section: a.section || '', p_text: a.text, p_operator: a.operator || ''}];
     case 'addPhoto': return ['api_add_photo', {
@@ -1998,6 +1998,14 @@ function viewController(isNew){
       '<div class="fld"><label>OD tolerance ± (in)</label><input id="f_blODTol" type="number" step="0.001" value="'+v('BL_ODTol')+'"></div>' +
       '<div class="fld"><label>Target wall thickness (in)</label><input id="f_blTargetWall" type="number" step="0.001" value="'+v('BL_TargetWall')+'"></div>' +
       '<div class="fld"><label>Target ID (in)</label><input id="f_blTargetID" type="number" step="0.001" value="'+v('BL_TargetID')+'"></div>' +
+      /* Most jobs are a single layer, so the Layer selector would be clutter on the
+       * thickness card for the majority of reels. Declared once here instead, and the
+       * operator's card only asks when this work order actually calls for it. */
+      '<div class="fld"><label>Baseline construction</label><select id="f_blLayers">' +
+        [['','Single layer'],['2','Two layers — check each separately']].map(function(o){
+          return '<option value="'+o[0]+'"'+(String(wo?wo.BL_Layers:'')===o[0]?' selected':'')+'>'+o[1]+'</option>';
+        }).join('') +
+      '</select></div>' +
       '<div class="fld"><label>Target length per reel (ft)</label><input id="f_blTargetLength" type="number" step="1" value="'+v('BL_TargetLength')+'"></div>' +
       '<div class="fld"><label>Line speed (ft/min)</label><input id="f_blLineSpeed" type="number" step="0.1" value="'+v('BL_LineSpeed')+'"></div>' +
     '</div>' +
@@ -2064,6 +2072,7 @@ function collectControllerForm(isNew){
     blTargetOD: E('f_blTargetOD').value, blODTol: E('f_blODTol').value,
     blTargetWall: E('f_blTargetWall').value, blTargetID: E('f_blTargetID').value,
     blTargetLength: E('f_blTargetLength').value, blLineSpeed: E('f_blLineSpeed').value, blNotes: E('f_blNotes').value,
+    blLayers: E('f_blLayers').value,
     brLongsMaterial: E('f_brLongsMaterial').value, brXbraidMaterial: E('f_brXbraidMaterial').value,
     brLongsEndsUp: E('f_brLongsEndsUp').value, brXbraidEndsUp: E('f_brXbraidEndsUp').value,
     brTargetPitch: E('f_brTargetPitch').value, brPitchTol: E('f_brPitchTol').value,
@@ -2510,6 +2519,8 @@ function referenceTargetsHtml(wo, sec){
       '<div class="kpi"><b>Target wall</b><span>'+fmtTol(wo.BL_TargetWall)+'</span></div>' +
       '<div class="kpi"><b>Target ID</b><span>'+fmtTol(wo.BL_TargetID)+'</span></div>' +
       '<div class="kpi"><b>Target length</b><span>'+fmtTol(wo.BL_TargetLength)+'</span><i>ft &middot; 16-pt check Start/End</i></div>' +
+      (isMultilayer(wo, 'Baseline')
+        ? '<div class="kpi"><b>Construction</b><span style="font-size:14px">Two layers</span><i>check each layer separately</i></div>' : '') +
       '<div class="kpi"><b>Line speed</b><span>'+fmtTol(wo.BL_LineSpeed)+'</span><i>ft/min'+lineSpeedHint(wo,'BL')+'</i></div>' +
     '</div>' + processRefHtml('BL', wo) +
     coExtruderRefHtml('BL_Bond', 'Co/Bonding Extruder', BASELINE_EXTRUDER_SIZE.bond, wo, false) +
@@ -2828,18 +2839,46 @@ function thicknessClockHtml(sec){
     '</div>';
 }
 
+/* Multilayer baseline.
+ *
+ * Some baseline pipe is run as two layers, and the useful measurement is each layer, not
+ * just the wall they add up to. Rather than a second kind of thickness check, the existing
+ * one gains a Layer selector: the operator does one clock face per layer, exactly the same
+ * entry they already know.
+ *
+ * "Full wall" is the default and is what every single-layer reel keeps sending, so nothing
+ * recorded before this means anything different. Only a full-wall check yields a computed
+ * ID — the average of one layer says nothing about the bore, and an ID derived from it
+ * would be confidently wrong, so the server leaves it null and the table shows a dash.
+ *
+ * Baseline only: Coverline is a single cover over finished pipe.
+ */
+var THICKNESS_LAYERS = ['Full wall', 'Layer 1 (inner)', 'Layer 2 (outer)'];
+
+// Declared once on the work order, because most jobs are single layer and the selector
+// would otherwise be clutter on every reel that will never use it.
+function isMultilayer(wo, sec){
+  return sec === 'Baseline' && String((wo || {}).BL_Layers || '') === '2';
+}
+
 function thicknessCheckCardHtml(sec){
   var n = pointCount(sec);
+  var multilayer = isMultilayer(STATE.workOrder, sec);
   var checks = STATE.thicknessChecks.filter(function(c){ return c.Section===sec; })
     .sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
   return card('thick-'+sec, 'Thickness check ('+n+'-point) &mdash; Start / End',
     targetLineHtml(STATE.workOrder, sec, 'thickness') +
     '<div class="grid g4">' +
       '<div class="fld"><label>Position</label><select id="tcPosition"><option>Start</option><option>End</option></select></div>' +
+      (multilayer ? '<div class="fld"><label>Layer</label><select id="tcLayer">' +
+        THICKNESS_LAYERS.map(function(l){ return '<option>'+esc(l)+'</option>'; }).join('') +
+        '</select></div>' : '') +
       '<div class="fld"><label>Operator</label><input id="tcOperator" value="'+esc(getOperatorName())+'"></div>' +
       ''+timeFieldHtml('tcTime')+'' +
       '<div class="fld"><label>OD (in)</label><input id="tcOD" type="number" step="0.001"></div>' +
     '</div>' +
+    (multilayer ? '<p class="tgtline">Two-layer baseline &mdash; take a clock face per layer. ' +
+      'Only the <b>Full wall</b> check gives a computed ID; a single layer can&rsquo;t.</p>' : '') +
     '<div class="fld" style="margin:10px 0 0"><label>Wall thickness at each point (in) &mdash; looking down the bore</label></div>' +
     thicknessClockHtml(sec) +
     '<div class="kpis" style="margin-top:10px">' +
@@ -2856,11 +2895,22 @@ function thicknessCheckCardHtml(sec){
 // Shared by the operator's own list and the report, so the void cell adapts: an operator
 // gets a Void button that raises a request, the controller gets Approve / Reject.
 function checksTableHtml(checks){
-  return '<table style="margin-top:10px"><thead><tr><th class="l">Time</th><th>Position</th><th>Operator</th><th>OD</th><th>Avg wall</th><th>Computed ID</th><th>Ovality</th><th class="l">Void</th></tr></thead><tbody>' +
+  // The column appears only where layers are actually recorded, so a single-layer job's
+  // table looks exactly as it always has.
+  var showLayer = checks.some(function(c){ return c.Layer; });
+  return '<table style="margin-top:10px"><thead><tr><th class="l">Time</th><th>Position</th>' +
+    (showLayer ? '<th class="l">Layer</th>' : '') +
+    '<th>Operator</th><th>OD</th><th>Avg wall</th><th>Computed ID</th><th>Ovality</th><th class="l">Void</th></tr></thead><tbody>' +
     checks.map(function(c){
       var voided = isVoid(c);
-      return '<tr'+(voided?' class="voided"':'')+'><td class="l">'+esc(fmtTime(c.Timestamp))+'</td><td>'+esc(c.Position)+'</td><td>'+esc(c.Operator)+'</td>' +
-        '<td class="num">'+esc(c.OD)+'"</td><td class="num">'+esc(c.AvgThickness)+'"</td><td class="num">'+esc(c.ComputedID)+'"</td><td class="num">'+esc(c.Ovality)+'"</td>' +
+      // A layer check has no computed ID by design — the server leaves it null rather
+      // than deriving a bore from one layer of the wall.
+      var id = (c.ComputedID === '' || c.ComputedID === undefined || c.ComputedID === null)
+        ? '<span class="muted">&mdash;</span>' : esc(c.ComputedID)+'"';
+      return '<tr'+(voided?' class="voided"':'')+'><td class="l">'+esc(fmtTime(c.Timestamp))+'</td><td>'+esc(c.Position)+'</td>' +
+        (showLayer ? '<td class="l">'+esc(c.Layer || 'Full wall')+'</td>' : '') +
+        '<td>'+esc(c.Operator)+'</td>' +
+        '<td class="num">'+esc(c.OD)+'"</td><td class="num">'+esc(c.AvgThickness)+'"</td><td class="num">'+id+'</td><td class="num">'+esc(c.Ovality)+'"</td>' +
         '<td class="l">'+rpVoidCell(c, 'thickness')+'</td></tr>';
     }).join('') + '</tbody></table>';
 }
@@ -3129,7 +3179,12 @@ function liveThicknessCalc(sec){
   var avg = round4(vals.reduce(function(a,b){return a+b;},0)/vals.length);
 
   E('tcAvg').textContent = avg + '"';
-  E('tcId').textContent = (od!==null) ? round4(od - 2*avg) + '"' : '—';
+  // Must agree with the server, which refuses to derive a bore from one layer of the wall.
+  // Showing a live ID here that the saved record then doesn't have would look like a bug.
+  var layerEl = E('tcLayer');
+  var wholeWall = !layerEl || layerEl.value === 'Full wall';
+  E('tcId').textContent = (od !== null && wholeWall) ? round4(od - 2*avg) + '"'
+                        : (!wholeWall ? 'n/a for one layer' : '—');
   E('tcOv').textContent = round4(hi - lo) + '"';
   if (avgClock) avgClock.textContent = avg;
 
@@ -3253,6 +3308,8 @@ function bindOperator(){
   if (sec !== 'Braidline'){
     qsa('.tPoint').forEach(function(inp){ inp.addEventListener('input', function(){ liveThicknessCalc(sec); }); });
     E('tcOD').addEventListener('input', function(){ liveThicknessCalc(sec); });
+    // Switching layer changes whether a computed ID is meaningful, so recompute.
+    if (E('tcLayer')) E('tcLayer').addEventListener('change', function(){ liveThicknessCalc(sec); });
     E('submitCheckBtn').addEventListener('click', function(){
       var operator = E('tcOperator').value.trim();
       if (!operator){ toast('Operator name is required', true); return; }
@@ -3263,7 +3320,9 @@ function bindOperator(){
       qsa('.tPoint').forEach(function(inp){ points[Number(inp.dataset.i)] = inp.value; });
       var ts = new Date(timeFieldValue('tcTime')).toISOString();
       E('submitCheckBtn').disabled = true;
-      apiSave('addThicknessCheck', {pipeCode:STATE.pipeCode, section:sec, position:E('tcPosition').value, od:od, points:points, operator:operator, timestamp:ts})
+      // Absent on a single-layer work order, where '' means the whole wall.
+      var layer = E('tcLayer') ? E('tcLayer').value : '';
+      apiSave('addThicknessCheck', {pipeCode:STATE.pipeCode, section:sec, position:E('tcPosition').value, od:od, points:points, operator:operator, timestamp:ts, layer:layer})
         .then(function(){ toast('Thickness check saved'); })
         .then(function(){ render(); })
         .catch(function(err){ toast(err.message, true); E('submitCheckBtn').disabled = false; });
