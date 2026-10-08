@@ -1106,6 +1106,18 @@ function pulseTick(){
 function refreshNow(){
   POLLERS.forEach(function(p){ try { p.fn(); } catch (e) { /* view torn down mid-flight */ } });
 }
+
+/* Redraw without throwing away where the reader was.
+ *
+ * Background refreshes rebuild a view by replacing innerHTML, which resets the scroll
+ * position. That was survivable on a 20-second timer; now that any write anywhere wakes
+ * every open screen within a few seconds, someone reading halfway down a long report would
+ * be yanked back to the top by an operator logging a reading on another reel. */
+function preserveScroll(redraw){
+  var y = window.scrollY || window.pageYOffset || 0;
+  redraw();
+  if (y) window.scrollTo(0, y);
+}
 // Every view registers its refresh here and go() clears the lot on navigation, so a
 // timer can't outlive the screen it belongs to and keep polling in the background.
 function stopPolling(){
@@ -2585,9 +2597,17 @@ function braidlineSpeedCardHtml(wo, sec){
 /* Four stacked reference cards was the worst of the clutter: the whole recipe for all three
  * lines, when an operator is standing at one of them. The section cards default to shut
  * (see CARD_SHUT_DEFAULT) so this opens as a short list you pick from. */
-function setupReferenceHtml(wo){
+/* `keyPrefix` keeps the report's copy of these cards separate from the operator's.
+ *
+ * Two reasons. They want different defaults — on the floor the references are clutter and
+ * start shut, in a report they are the point and start open — and collapsing one on the
+ * shop tablet shouldn't collapse the other in a document someone is reading. Distinct
+ * keys give each its own remembered state. */
+function setupReferenceHtml(wo, keyPrefix){
+  var k = keyPrefix || 'setup';
+  var hint = (k === 'setup') ? 'tap to open' : '';
   return '' +
-  card('setup-wo', 'Work order',
+  card(k + '-wo', 'Work order',
     '<div class="grid g4">' +
       '<div class="kpi"><b>Customer</b><span style="font-size:14px">'+fmtTol(wo.Customer)+'</span></div>' +
       '<div class="kpi"><b>Product code</b><span style="font-size:14px">'+fmtTol(wo.ProductCode)+'</span></div>' +
@@ -2595,7 +2615,7 @@ function setupReferenceHtml(wo){
       '<div class="kpi"><b>Project length</b><span>'+fmtTol(wo.ProjectLength)+'</span><i>ft total, across all reels</i></div>' +
     '</div>') +
   ['Baseline','Braidline','Coverline'].map(function(s){
-    return card('setup-'+s, s+' reference', referenceTargetsHtml(wo, s), 'tap to open');
+    return card(k+'-'+s, s+' reference', referenceTargetsHtml(wo, s), hint);
   }).join('');
 }
 
@@ -3769,7 +3789,10 @@ function loadPipeDetail(pipeCode){
   apiGet('getPipe', {pipeCode: pipeCode}).then(function(data){
     STATE.pdData = data;
     if (!STATE.pdSection) STATE.pdSection = firstOpenSection(data.pipe);
-    renderPipeDetail();
+    // Same reason as the report: a live refresh shouldn't move the reader. The reset
+    // field in the reset card is below the fold, so this also stops a typed reel code
+    // scrolling out of view mid-confirmation.
+    preserveScroll(renderPipeDetail);
   }).catch(function(err){
     var r = E('pdRoot');
     if (r) r.innerHTML = '<section class="card"><p class="flag">'+esc(err.message)+'</p></section>';
@@ -3779,6 +3802,11 @@ function loadPipeDetail(pipeCode){
 function renderPipeDetail(){
   var root = E('pdRoot');
   if (!root) return;
+  /* A live refresh rebuilds this page, which would otherwise clear the reset card's
+   * confirmation box the instant anyone logs a reading anywhere — you type the reel code,
+   * the page redraws, and the button then tells you the code is wrong. Carry it across. */
+  var keepConfirm = E('rsConfirm') ? E('rsConfirm').value : null;
+  var keepLog = E('rsIncludeLog') ? E('rsIncludeLog').checked : null;
   var data = STATE.pdData, pipe = data.pipe, wo = data.workOrder, sec = STATE.pdSection;
   var prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
 
@@ -3832,6 +3860,9 @@ function renderPipeDetail(){
       (targetLen!=='' || actualLen!=='' ? '<div class="muted" style="margin-top:10px;font-size:11px">Length — target '+fmtTol(targetLen)+' ft &middot; actual '+fmtTol(actualLen)+' ft</div>' : '') +
     '</section>' +
     resetCardHtml(pipe, sec, data);
+
+  if (keepConfirm !== null && E('rsConfirm')) E('rsConfirm').value = keepConfirm;
+  if (keepLog !== null && E('rsIncludeLog')) E('rsIncludeLog').checked = keepLog;
 
   E('pdBackBtn').addEventListener('click', function(){ go('woDashboard', {workOrderCode: pipe.WorkOrderCode}); });
   bindResetCard(pipe);
@@ -4352,7 +4383,9 @@ function loadReport(pipeCode, quiet){
   if (!quiet){ var r = E('rpRoot'); if (r) r.innerHTML = '<p class="muted">Loading report&hellip;</p>'; }
   apiGet('getPipe', {pipeCode: pipeCode}).then(function(data){
     STATE.rpPipe = pipeCode; STATE.rpData = data; STATE.rpLoadedAt = new Date();
-    renderReport();
+    // A background refresh must not move a reader; opening the report fresh should start
+    // at the top, which it does because there is nothing to preserve.
+    if (quiet) preserveScroll(renderReport); else renderReport();
   }).catch(function(err){
     if (err && err.sessionExpired) return;
     if (quiet) return; // a failed background poll keeps the last good render on screen
@@ -4759,7 +4792,7 @@ function renderReport(){
     rpAllProblemsHtml(data.problemReports || []) +
 
     '<h2 style="margin:16px 0 8px">Setup &amp; recipe reference</h2>' +
-    setupReferenceHtml(wo) +
+    setupReferenceHtml(wo, 'rpsetup') +
 
     '<h2 style="margin:16px 0 8px">Measurements</h2>' +
     ['Baseline','Braidline','Coverline'].map(function(s){ return rpSectionDetailHtml(data, s); }).join('') +
@@ -4778,6 +4811,9 @@ function renderReport(){
   });
   E('rpPrintBtn').addEventListener('click', printReport);
   bindVoidDecisions(root);
+  // The report draws collapsible cards too. Without this its headings were inert: they
+  // said "tap to open" and nothing happened.
+  bindCollapsibles(root);
 }
 
 // The default print rules hide everything but the reel tag, so printing a report has
