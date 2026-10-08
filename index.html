@@ -1967,9 +1967,6 @@ function viewOperator(){
     '<div><b>'+esc(pipe.PipeCode)+'</b> <span class="muted">work order '+esc(pipe.WorkOrderCode)+' &middot; '+esc(wo.Customer||'')+' &middot; '+esc(wo.ProductCode||'')+'</span></div>' +
     '<span class="spacer"></span>' +
     (openProblems ? '<span class="pill" style="background:var(--crit)">'+openProblems+' open issue'+(openProblems===1?'':'s')+'</span>' : '') +
-    // Emailing the report sends it out to the work order's EmailTo list — a controller
-    // action, not something the floor triggers, so operators don't get the button.
-    (isAdmin() ? '<button class="btn sm" id="emailNowBtn">Email report now</button>' : '') +
     '<button class="btn sm" id="backHomeBtn">'+(isAdmin() ? 'Home' : 'Done — another reel')+'</button>' +
   '</div>' +
   '<div class="tabs">' +
@@ -2674,15 +2671,6 @@ function bindOperator(){
 
   var sec = STATE.section, prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
 
-  var emailBtn = E('emailNowBtn'); // admin only — see viewOperator's header
-  if (emailBtn) emailBtn.addEventListener('click', function(){
-    emailBtn.disabled = true;
-    apiPost('sendReport', {pipeCode: STATE.pipeCode, trigger: 'manual'})
-      .then(function(res){ toast('Report emailed to ' + res.sentTo); })
-      .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); })
-      .then(function(){ emailBtn.disabled = false; });
-  });
-
   if (sec === 'Setup') return;
   if (sec === 'Problems') { bindProblemReportTab(); return; }
 
@@ -3118,7 +3106,6 @@ function renderPipeDetail(){
       (openProblems.length ? problemBadge(openProblems.length) : '') +
       '<button class="btn sm" id="pdOpenOpBtn">Open operator view</button>' +
       '<button class="btn sm" id="pdTagBtn">Reel tag / QR</button>' +
-      '<button class="btn sm" id="pdEmailBtn">Email report now</button>' +
       '<button class="btn sm" id="pdBackBtn">Back to work order</button>' +
     '</div>' +
     (openProblems.length ? '<section class="card" style="border-color:var(--crit)">' +
@@ -3153,13 +3140,6 @@ function renderPipeDetail(){
   E('pdOpenOpBtn').addEventListener('click', function(){ go('operator', {pipeCode: pipe.PipeCode, section: sec}); });
   E('pdTagBtn').addEventListener('click', function(){
     openTagFor(pipe.PipeCode, {view: 'pipeDetail', opts: {pipeCode: pipe.PipeCode}, label: 'Back to reel'});
-  });
-  E('pdEmailBtn').addEventListener('click', function(){
-    E('pdEmailBtn').disabled = true;
-    apiPost('sendReport', {pipeCode: pipe.PipeCode, trigger: 'manual'})
-      .then(function(res){ toast('Report emailed to ' + res.sentTo); })
-      .catch(function(err){ toast(err.message, true); })
-      .then(function(){ E('pdEmailBtn').disabled = false; });
   });
   qsa('[data-detailsec]', root).forEach(function(b){
     b.addEventListener('click', function(){ STATE.pdSection = b.dataset.detailsec; renderPipeDetail(); });
@@ -3939,7 +3919,6 @@ function renderReport(){
       '<button class="btn sm" id="rpBackBtn">All reports</button>' +
       '<button class="btn sm" id="rpOpenPipeBtn">Open reel</button>' +
       '<button class="btn sm" id="rpTagBtn">Reel tag / QR</button>' +
-      '<button class="btn sm" id="rpEmailBtn">Email report</button>' +
       '<button class="btn sm pri" id="rpPrintBtn">Print / PDF</button>' +
     '</div>' +
 
@@ -3975,13 +3954,6 @@ function renderReport(){
   });
   E('rpTagBtn').addEventListener('click', function(){
     openTagFor(pipe.PipeCode, {view: 'reports', label: 'Back to report'});
-  });
-  E('rpEmailBtn').addEventListener('click', function(){
-    var b = E('rpEmailBtn'); b.disabled = true;
-    apiPost('sendReport', {pipeCode: pipe.PipeCode, trigger: 'manual'})
-      .then(function(res){ toast('Report emailed to ' + res.sentTo); })
-      .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); })
-      .then(function(){ b.disabled = false; });
   });
   E('rpPrintBtn').addEventListener('click', printReport);
   bindVoidDecisions(root);
