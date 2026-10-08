@@ -450,6 +450,9 @@ function setAuth(token, account){
   AUTH.account = account || null;
   if (AUTH.token){ lsSet('srtp_token', AUTH.token); } else { lsDel('srtp_token'); }
   if (AUTH.account){ lsSet('srtp_account', JSON.stringify(AUTH.account)); } else { lsDel('srtp_account'); }
+  // The live-update heartbeat only runs for a signed-in session, and signing out must
+  // stop it rather than leave it calling a dead token every few seconds.
+  if (AUTH.token) startPulse(); else stopPulse();
 }
 
 function clearAuth(){ setAuth('', null); }
@@ -619,6 +622,7 @@ function supaRoute(action, a){
   var t = AUTH.token;
   switch (action){
     case 'ping':                   return ['api_ping', {p_token: t}];
+    case 'pulse':                  return ['api_pulse', {p_token: t}];
     case 'getPipe':                return ['api_get_pipe', {p_token: t, p_pipe_code: a.pipeCode}];
     case 'getWorkOrderInfo':       return ['api_get_work_order_info', {p_token: t, p_code: a.code}];
     case 'dashboard':              return ['api_dashboard', {p_token: t}];
@@ -1050,6 +1054,58 @@ function pollEvery(fn, ms){
   POLLERS.push({fn: fn, id: id});
   return id;
 }
+
+/* ===================== LIVE UPDATES =====================
+ *
+ * Every screen refetched its whole payload on a 20-second timer. That is slow to notice a
+ * reading logged on a phone and wasteful the rest of the time — and on the TV board, where
+ * nobody is going to press refresh, being up to 20 seconds stale is the difference between
+ * a live display and a poster.
+ *
+ * So the app asks one cheap question often instead of an expensive one rarely: api_pulse
+ * returns the newest last_updated across all reels, which every write bumps. When that
+ * number moves, every registered view refresh fires at once. The slow timers stay as a
+ * backstop in case a write somehow lands without touching a reel.
+ *
+ * This is polling, not a websocket, and that is deliberate. Supabase Realtime would need
+ * the browser to hold a SELECT policy on the tables it watches, and the whole security
+ * model here is that no table is readable directly — the api_ functions are the only way
+ * in. Trading that away to save three seconds of latency is a bad deal. The pulse is a few
+ * hundred bytes, so even at this rate it moves far less data than the old 20s full fetches.
+ */
+var PULSE_MS = 4000;
+var PULSE_LAST = null;
+var pulseTimer = null;
+var pulseInFlight = false;
+
+function startPulse(){
+  if (pulseTimer) return;
+  pulseTimer = setInterval(pulseTick, PULSE_MS);
+}
+function stopPulse(){
+  if (pulseTimer){ clearInterval(pulseTimer); pulseTimer = null; }
+  PULSE_LAST = null;
+}
+
+function pulseTick(){
+  // A hidden tab shouldn't poll; the visibilitychange handler below catches it up the
+  // moment someone looks at it again.
+  if (document.hidden || !isSignedIn() || pulseInFlight || !POLLERS.length) return;
+  pulseInFlight = true;
+  apiGet('pulse', {}).then(function(p){
+    var sig = p ? (p.v + '|' + p.n + '|' + p.w) : null;
+    if (sig !== null && PULSE_LAST !== null && sig !== PULSE_LAST) refreshNow();
+    if (sig !== null) PULSE_LAST = sig;
+  }).catch(function(){
+    /* A failed pulse is not worth a toast — the next one will tell us, and noteApiFailure
+     * has already updated the connection indicator in the header. */
+  }).then(function(){ pulseInFlight = false; });
+}
+
+// Fire every view refresh registered for the current screen.
+function refreshNow(){
+  POLLERS.forEach(function(p){ try { p.fn(); } catch (e) { /* view torn down mid-flight */ } });
+}
 // Every view registers its refresh here and go() clears the lot on navigation, so a
 // timer can't outlive the screen it belongs to and keep polling in the background.
 function stopPolling(){
@@ -1062,7 +1118,7 @@ function stopPolling(){
 }
 document.addEventListener('visibilitychange', function(){
   if (document.hidden) return;
-  POLLERS.forEach(function(p){ try { p.fn(); } catch (e) { /* view torn down mid-flight */ } });
+  refreshNow();
 });
 
 /* ============================= UTIL ============================= */
@@ -1254,6 +1310,32 @@ function fmtHrsMin(minutes){
 
 // Mirrors computeProdTiming_ in Code.gs — kept in sync manually since this runs client-side
 // for live ticking between polls; the server version is the source of truth for the dashboard/TV.
+/* How much pipe this section actually has to run.
+ *
+ * A downstream section can only process what the one before it made. The work order's
+ * target length is what we hoped to get off the reel; once Baseline finishes and reports
+ * an actual, that is what Braidline has to braid, and Braidline's actual is what Coverline
+ * has to cover. Measuring Braidline against the original target made a reel that came up
+ * short look permanently incomplete, and stretched its expected run time to match.
+ *
+ * Mirrors _effective_target_length in the database, which is what the dashboard and TV
+ * bars use — the two must agree or the same reel reads differently on two screens.
+ */
+function effectiveTargetLength(wo, pipe, section){
+  var ref = function(p){
+    var v = wo[p+'_TargetLength'];
+    return {target: (v === '' || v === undefined) ? null : Number(v), source: 'reference'};
+  };
+  var upstream = function(field, name, fallback){
+    var v = pipe[field];
+    return (v === '' || v === undefined || v === null)
+      ? ref(fallback) : {target: Number(v), source: name};
+  };
+  if (section === 'Baseline')  return ref('BL');
+  if (section === 'Braidline') return upstream('BL_ActualLength', 'Baseline',  'BR');
+  return                               upstream('BR_ActualLength', 'Braidline', 'CV');
+}
+
 function computeProdTiming(wo, pipe, section, downtimeEvents){
   var prefix = section==='Baseline'?'BL':section==='Braidline'?'BR':'CV';
   if (pipe[prefix+'_Status'] !== 'In progress') return null;
@@ -1274,9 +1356,10 @@ function computeProdTiming(wo, pipe, section, downtimeEvents){
   var totalMinutes = Math.max(0, (nowMs-startMs)/60000);
   var runningMinutes = Math.max(0, totalMinutes - downMinutes);
 
-  var targetLength = wo[prefix+'_TargetLength'], lineSpeed = wo[prefix+'_LineSpeed'];
+  var eff = effectiveTargetLength(wo, pipe, section);
+  var targetLength = eff.target, lineSpeed = wo[prefix+'_LineSpeed'];
   var expectedMinutes = '';
-  if (targetLength!=='' && targetLength!==undefined && lineSpeed!=='' && lineSpeed!==undefined && Number(lineSpeed)>0){
+  if (targetLength!=='' && targetLength!==undefined && targetLength!==null && lineSpeed!=='' && lineSpeed!==undefined && Number(lineSpeed)>0){
     expectedMinutes = round4(Number(targetLength)/Number(lineSpeed));
   }
 
@@ -2655,7 +2738,13 @@ function targetLineHtml(wo, sec, what){
   if (what === 'reading'){
     if (sec === 'Braidline') push('pitch', wo.BR_TargetPitch, wo.BR_PitchTol, '"');
     push('OD', wo[p+'_TargetOD'], wo[p+'_ODTol'], '"');
-    push('length', wo[p+'_TargetLength'], null, ' ft');
+    // The length to run, and where it came from — a downstream section runs what the
+    // section before it actually made, not what the work order hoped for.
+    var eff = effectiveTargetLength(wo, STATE.pipe || {}, sec);
+    if (eff.target !== null){
+      bits.push('<span>length <b>'+esc(eff.target)+' ft</b>' +
+        (eff.source === 'reference' ? ' <i>(reference)</i>' : ' <i>(from '+esc(eff.source)+')</i>') + '</span>');
+    }
     push('line speed', wo[p+'_LineSpeed'], null, ' ft/min');
   } else {
     push('wall', wo[p+'_TargetWall'], null, '"');
@@ -3443,7 +3532,7 @@ function viewDashboard(){
 
 function bindDashboard(){
   loadDashboard();
-  STATE.dashTimer = pollEvery(loadDashboard, 20000);
+  STATE.dashTimer = pollEvery(loadDashboard, 60000);
 }
 
 function loadDashboard(){
@@ -3550,7 +3639,7 @@ function viewTimers(){
 
 function bindTimers(){
   loadTimers();
-  STATE.dashTimer = pollEvery(loadTimers, 20000);
+  STATE.dashTimer = pollEvery(loadTimers, 60000);
 }
 
 function loadTimers(){
@@ -3672,7 +3761,7 @@ function viewPipeDetail(){
 
 function bindPipeDetail(){
   loadPipeDetail(STATE.pipeCode);
-  STATE.dashTimer = pollEvery(function(){ loadPipeDetail(STATE.pipeCode); }, 20000);
+  STATE.dashTimer = pollEvery(function(){ loadPipeDetail(STATE.pipeCode); }, 60000);
 }
 
 function loadPipeDetail(pipeCode){
@@ -4007,7 +4096,7 @@ function viewWoDashboard(){
 
 function bindWoDashboard(){
   loadWoDashboard();
-  STATE.dashTimer = pollEvery(loadWoDashboard, 20000);
+  STATE.dashTimer = pollEvery(loadWoDashboard, 60000);
 }
 
 function loadWoDashboard(){
@@ -4246,7 +4335,7 @@ function bindReports(){
   // go() calls stopPolling() on navigation, so this stops itself when you leave.
   STATE.dashTimer = pollEvery(function(){
     if (STATE.view === 'reports' && STATE.rpPipe) loadReport(STATE.rpPipe, true);
-  }, 20000);
+  }, 60000);
 }
 
 function loadReportIndex(){
@@ -4535,17 +4624,51 @@ function rpProblemsHtml(problems, sec){
   var rows = problems.filter(function(p){ return p.Section === sec; })
     .sort(function(a,b){ return new Date(a.Timestamp) - new Date(b.Timestamp); });
   if (!rows.length) return '';
-  return '<h3 style="margin-top:12px">Problem reports</h3>' +
-    rows.map(function(p){
-      return '<div class="problemcard '+(p.Status==='Open'?'open':'')+'">' +
-        '<div class="row"><b>'+(p.Status==='Open'?'<span class="flag">OPEN</span>':'<span class="ok">Resolved</span>')+'</b>' +
-        (p.FootageMarker!=='' && p.FootageMarker!==undefined ? '<span class="muted">footage '+esc(p.FootageMarker)+' ft</span>' : '') +
-        '<span class="spacer"></span><span class="muted">'+esc(rpShortTime(p.Timestamp))+' &middot; '+esc(p.Operator)+'</span></div>' +
-        '<p style="margin:5px 0 0">'+esc(p.Description)+'</p>' +
-        (p.ResolutionNotes ? '<p class="muted" style="margin:4px 0 0">Resolution: '+esc(p.ResolutionNotes)+
-          ' &mdash; '+esc(p.ResolvedBy||'')+' '+esc(rpShortTime(p.ResolvedAt))+'</p>' : '') +
-      '</div>';
-    }).join('');
+  // Repeated here next to this section's chart, where the warning markers are, as well as
+  // in the reel-wide list above. Duplication is the right call in a printed record: both
+  // places are somewhere a reader would reasonably look.
+  return '<h3 style="margin-top:12px">Problem reports &mdash; '+esc(sec)+'</h3>' +
+    rows.map(rpProblemCardHtml).join('');
+}
+
+/* Every problem raised on this reel, in one place, near the top.
+ *
+ * They were only ever listed inside each section's measurement card, which buried them and
+ * dropped any report filed without a section entirely — those matched no section filter and
+ * appeared nowhere. A problem that was resolved still happened, so resolved ones are listed
+ * too: the point of the record is that someone reading it later can see what the run hit,
+ * not just what was still broken at the end.
+ */
+function rpAllProblemsHtml(problems){
+  if (!problems.length){
+    return '<section class="card rp-sec"><h2>Problem reports</h2>' +
+      '<p class="muted">None raised on this reel.</p></section>';
+  }
+  var open = problems.filter(function(p){ return p.Status === 'Open'; });
+  var closed = problems.filter(function(p){ return p.Status !== 'Open'; });
+  // Open first, then resolved; each oldest-first so it reads as the run unfolded.
+  var byTime = function(a,b){ return new Date(a.Timestamp) - new Date(b.Timestamp); };
+
+  return '<section class="card rp-sec"' + (open.length ? ' style="border-color:var(--crit)"' : '') + '>' +
+    '<h2>Problem reports</h2>' +
+    '<p class="muted" style="margin-top:0">' +
+      problems.length + ' raised on this reel &mdash; ' +
+      '<b>' + open.length + ' open</b>, ' + closed.length + ' resolved. ' +
+      'Resolved issues are kept so the run history is complete.</p>' +
+    open.concat(closed.sort(byTime)).map(rpProblemCardHtml).join('') +
+  '</section>';
+}
+
+function rpProblemCardHtml(p){
+  return '<div class="problemcard '+(p.Status==='Open'?'open':'')+'">' +
+    '<div class="row"><b>'+(p.Status==='Open'?'<span class="flag">OPEN</span>':'<span class="ok">Resolved</span>')+'</b>' +
+    '<span class="muted">'+esc(p.Section || 'General')+'</span>' +
+    (p.FootageMarker!=='' && p.FootageMarker!==undefined ? '<span class="muted">footage '+esc(p.FootageMarker)+' ft</span>' : '') +
+    '<span class="spacer"></span><span class="muted">'+esc(rpShortTime(p.Timestamp))+' &middot; '+esc(p.Operator)+'</span></div>' +
+    '<p style="margin:5px 0 0">'+esc(p.Description)+'</p>' +
+    (p.ResolutionNotes ? '<p class="muted" style="margin:4px 0 0">Resolution: '+esc(p.ResolutionNotes)+
+      ' &mdash; '+esc(p.ResolvedBy||'')+' '+esc(rpShortTime(p.ResolvedAt))+'</p>' : '') +
+  '</div>';
 }
 
 function rpSectionDetailHtml(data, sec){
@@ -4633,6 +4756,8 @@ function renderReport(){
     '<h2 style="margin:16px 0 8px">Run summary</h2>' +
     ['Baseline','Braidline','Coverline'].map(function(s){ return rpSectionSummaryHtml(data, s); }).join('') +
 
+    rpAllProblemsHtml(data.problemReports || []) +
+
     '<h2 style="margin:16px 0 8px">Setup &amp; recipe reference</h2>' +
     setupReferenceHtml(wo) +
 
@@ -4681,7 +4806,7 @@ function bindTV(){
   STATE.tvPage = 0;
   STATE.tvDrillWO = null; STATE.tvDrillPipe = null; STATE.tvSection = null;
   loadTVBoard();
-  STATE.dashTimer = pollEvery(loadTVBoard, 20000);
+  STATE.dashTimer = pollEvery(loadTVBoard, 60000);
   STATE.tvPageTimer = setInterval(advanceTVPage, 8000);
   startTVClock();
 }
@@ -5027,6 +5152,11 @@ document.addEventListener('click', function(ev){
     render();
     return;
   }
+
+  // A session restored from localStorage never went through setAuth on this load, so the
+  // heartbeat has to be started here too — otherwise reopening the TV board on a display
+  // that was already signed in would come back without live updates.
+  startPulse();
 
   // The TV board is a controller display; an operator session landing on ?tv= gets
   // bounced to their reel lookup by go()'s ADMIN_VIEWS guard.
