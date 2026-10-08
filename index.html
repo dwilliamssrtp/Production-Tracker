@@ -1142,43 +1142,47 @@ function refreshExpandAll(){
   btn.style.display = n ? '' : 'none';
   btn.textContent = 'Open ' + n + ' closed ' + (n === 1 ? 'section' : 'sections');
 }
-/* Time is the controller's to adjust, nobody else's.
+/* Time is reported, never entered.
  *
- * Operators used to get an editable datetime on every entry, defaulted to now. It was
- * there for the genuine case of writing up a reading taken twenty minutes ago, and the
- * provenance columns (TimeSource / TimeOffsetMin) exist to record when it was used. In
- * practice the field invited back-dating, and a timestamp an operator can move is a
- * timestamp the record can't lean on.
+ * Every entry used to carry an editable datetime defaulted to now. It was there for the
+ * genuine case of writing up a reading taken twenty minutes ago, and the provenance
+ * columns (TimeSource / TimeOffsetMin) existed to record when it had been used. In
+ * practice it invited back-dating, and a timestamp anyone can move is a timestamp the
+ * record can't lean on — so there is no longer a field to move. Entries are stamped at
+ * the moment of saving, by the device, for everyone including the controller.
  *
- * So operators now get the time shown, not offered: the entry is stamped when they press
- * the button. The controller keeps the editable field for corrections, and those still
- * come through marked Manual with the offset, exactly as before.
+ * The displayed clock ticks (see startClockTick) rather than freezing at render time: a
+ * form can sit open for half an hour, and showing a time that is not the one about to be
+ * written would be worse than showing nothing.
  */
 function timeFieldHtml(id){
-  if (isAdmin()){
-    return '<div class="fld"><label>Time</label>' +
-      '<input id="'+id+'" type="datetime-local" value="'+nowLocalInputValue()+'" data-touched="0"></div>';
-  }
   return '<div class="fld"><label>Time</label>' +
-    '<div class="rotime" id="'+id+'_ro">'+esc(fmtClock(new Date()))+'</div>' +
+    '<div class="rotime clocknow" id="'+id+'_ro">'+esc(fmtClock(new Date()))+'</div>' +
     '<i class="muted" style="font-size:9px">stamped when you save</i></div>';
 }
 
-// The value to send. With no editable field there is nothing to read, so the entry is
-// stamped at the moment of saving rather than whenever the form happened to be drawn.
-function timeFieldValue(id){
-  var el = E(id);
-  return el && el.value ? el.value : nowLocalInputValue();
-}
-function timeFieldEdited(id){
-  var el = E(id);
-  return !!(el && el.dataset && el.dataset.touched === '1');
+// There is no field to read, so an entry is always stamped at the moment it is saved
+// rather than whenever the form happened to be drawn.
+function timeFieldValue(){ return nowLocalInputValue(); }
+function timeFieldEdited(){ return false; }
+
+function startClockTick(){
+  var paint = function(){
+    var now = fmtClock(new Date());
+    qsa('.clocknow').forEach(function(el){ el.textContent = now; });
+  };
+  paint();
+  pollEvery(paint, 20000);   // registered with the pollers, so go() clears it
 }
 
+// Date as well as time: a night shift crosses midnight, and "11:58 PM" alone doesn't say
+// which day the entry lands on.
+var CLOCK_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 function fmtClock(d){
   var h = d.getHours(), m = d.getMinutes(), ap = h >= 12 ? 'PM' : 'AM';
   h = h % 12; if (h === 0) h = 12;
-  return h + ':' + String(m).padStart(2,'0') + ' ' + ap;
+  return CLOCK_MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' +
+         h + ':' + String(m).padStart(2,'0') + ' ' + ap;
 }
 
 function nowLocalInputValue(){
@@ -3204,6 +3208,7 @@ function bindOperator(){
   qsa('.tabs button').forEach(function(b){ b.addEventListener('click', function(){ go('operator', {pipeCode: STATE.pipeCode, section: b.dataset.sec}); }); });
 
   bindCollapsibles(E('app'));
+  startClockTick();
 
   // Switching reels keeps the section, so moving from R1 to R2 mid-Braidline lands on
   // Braidline rather than making them find it again. go() loads the reel it doesn't have.
@@ -3242,26 +3247,17 @@ function bindOperator(){
 
   bindProductionTimer(STATE.workOrder, STATE.pipe, sec);
 
-  // Marks the time field as deliberately edited. 'change' rather than 'input' so that
-  // merely focusing or tabbing through a datetime input doesn't count as an edit.
-  var rdTimeEl = E('rdTime');
-  if (rdTimeEl) rdTimeEl.addEventListener('change', function(){ rdTimeEl.dataset.touched = '1'; });
-
   E('submitReadingBtn').addEventListener('click', function(){
     var operator = E('opName').value.trim();
     if (!operator){ toast('Operator name is required', true); return; }
     setOperatorName(operator);
 
-    /* The time field is prefilled with "now" when the form renders. If the operator never
-     * touched it, send the time at the moment they hit Log — not the prefill, which could
-     * be half an hour stale if the form sat open. That keeps an untouched reading honestly
-     * stamped "Device", and means only a deliberate edit is reported as Manual.
-     *
-     * The server doesn't take this on faith — it compares the claimed time against when it
-     * actually received the reading and overrides a "Device" claim that doesn't hold up. */
-    var edited = timeFieldEdited('rdTime');
-    var ts = edited ? new Date(timeFieldValue('rdTime')).toISOString() : new Date().toISOString();
-    var timeSource = edited ? 'Manual' : 'Device';
+    /* Stamped at the press of Log, not when the form was drawn — a form can sit open for
+     * half an hour. There is no longer any way to claim a different time, so this is
+     * always "Device"; the server still checks the claim against when it actually received
+     * the reading, which is what makes a wrong device clock visible rather than silent. */
+    var ts = new Date().toISOString();
+    var timeSource = 'Device';
     var odVal = num(E('rdOD').value);
     var footageVal = E('rdFootage') ? E('rdFootage').value : '';
     // One entry, one request. A Braidline entry logs a pitch and an OD, which used to be
