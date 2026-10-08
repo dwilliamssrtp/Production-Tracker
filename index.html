@@ -444,7 +444,7 @@ function fetchWithTimeout(url, opts){
       clearTimeout(timer);
       if (err && err.name === 'AbortError'){
         var e = new Error('The server did not answer within ' + Math.round(REQUEST_TIMEOUT_MS/1000) +
-          ' seconds. It may be busy — try again. If it keeps happening, check the Apps Script deployment.');
+          ' seconds. It may be busy — try again. If it keeps happening, check the backend in Settings.');
         e.timedOut = true;
         throw e;
       }
@@ -679,6 +679,141 @@ function supaCall(action, args){
       return j;
     });
   }).catch(function(err){ noteApiFailure(err); throw err; });
+}
+
+/* ================================ PHOTO UPLOADS ================================
+ *
+ * Photos deliberately do NOT go through the RPC layer. A base64 image inside a JSON body
+ * is a third larger than the file and has to be held in memory twice before it lands
+ * anywhere — which is what made photo upload the slowest action in the app on Apps
+ * Script. The file now goes straight to Storage and only the resulting path is recorded
+ * through api_add_photo.
+ *
+ * The browser cannot write to the reel-photos bucket on its own: the bucket has no insert
+ * policy, and the publishable key in this page grants no storage write at all. The page
+ * asks the photo-upload-url Edge Function for a one-time link, and that function checks
+ * this session's token against the sessions table before issuing one — the same check
+ * every reading and thickness entry already makes. No valid session, no upload.
+ */
+var PHOTO_BUCKET   = 'reel-photos';
+var PHOTO_MAX_PX   = 1600;
+var PHOTO_JPEG_Q   = 0.82;
+var PHOTO_MAX_BYTES = 10 * 1024 * 1024;   // the bucket's own limit; checked here so the
+                                          // operator hears about it before the upload.
+
+// What the bucket accepts. Kept in step with the EXT map in the Edge Function — a type
+// missing there is rejected server-side, so failing early gives a better message.
+var PHOTO_TYPES = {'image/jpeg':1, 'image/png':1, 'image/webp':1, 'image/heic':1, 'image/heif':1};
+
+/* A phone camera photo is 3-8MB. That is slow to send over shop-floor wifi and far more
+ * than a 300px thumbnail or a full-screen review needs; re-encoding to 1600px lands
+ * around 300KB. It matters more here than it would elsewhere because Storage serves the
+ * stored object as-is — image transformations are a paid add-on — so whatever is uploaded
+ * is also what every thumbnail downloads.
+ *
+ * Anything that goes wrong in the decode falls back to the original file rather than
+ * failing the upload: an unsupported HEIC, a browser without canvas.toBlob, a decode that
+ * never finishes. Shrinking is an optimisation, not a requirement. */
+function shrinkImage(file){
+  return new Promise(function(resolve){
+    var typeOk = !!PHOTO_TYPES[(file.type || '').toLowerCase()];
+    var canvas;
+    try { canvas = document.createElement('canvas'); } catch (e){ return resolve(file); }
+    if (typeof canvas.toBlob !== 'function') return resolve(file);
+    if (!file.type || file.type.indexOf('image/') !== 0) return resolve(file);
+
+    var url = URL.createObjectURL(file);
+    var img = new Image();
+    var done = false;
+    function finish(out){
+      if (done) return;
+      done = true;
+      try { URL.revokeObjectURL(url); } catch (e){}
+      resolve(out || file);
+    }
+    img.onerror = function(){ finish(null); };
+    img.onload = function(){
+      try {
+        var scale = Math.min(1, PHOTO_MAX_PX / Math.max(img.width, img.height));
+        // Already small and already a type the bucket takes: nothing to gain by re-encoding.
+        if (scale >= 1 && typeOk && file.size < 900000) return finish(null);
+        canvas.width  = Math.max(1, Math.round(img.width  * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(function(blob){
+          // Keep the re-encode when it's smaller, or when the original is a type the
+          // bucket would refuse — in that case a bigger JPEG still beats a failed upload.
+          finish(blob && (blob.size < file.size || !typeOk) ? blob : null);
+        }, 'image/jpeg', PHOTO_JPEG_Q);
+      } catch (e){ finish(null); }
+    };
+    img.src = url;
+    setTimeout(function(){ finish(null); }, 15000);
+  });
+}
+
+// Public read URL for a stored object. Each path segment is encoded separately so a
+// reel code containing a space or a slash-unsafe character still resolves.
+function photoStorageUrl(path){
+  return SUPABASE_URL + '/storage/v1/object/public/' + PHOTO_BUCKET + '/' +
+    String(path).split('/').map(encodeURIComponent).join('/');
+}
+
+/* Ask for permission, upload, and hand back the stored path for api_add_photo. */
+function uploadPhotoToSupabase(file, pipeCode){
+  return shrinkImage(file).then(function(blob){
+    var type = (blob.type || file.type || '').toLowerCase();
+    if (!PHOTO_TYPES[type]){
+      var bad = new Error('That file type can’t be uploaded (' + (type || 'unknown') +
+        '). Take the photo with the camera, or choose a JPEG or PNG.');
+      bad.appError = true; throw bad;
+    }
+    if (blob.size > PHOTO_MAX_BYTES){
+      var big = new Error('That photo is ' + Math.round(blob.size / 1048576) + 'MB, over the ' +
+        Math.round(PHOTO_MAX_BYTES / 1048576) + 'MB limit.');
+      big.appError = true; throw big;
+    }
+
+    return fetchWithTimeout(SUPABASE_URL + '/functions/v1/photo-upload-url', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'apikey': SUPABASE_KEY,
+                'Authorization': 'Bearer ' + SUPABASE_KEY},
+      body: JSON.stringify({token: AUTH.token, pipeCode: pipeCode, contentType: type})
+    }).then(function(r){
+      return r.text().then(function(text){
+        var j = null;
+        try { j = text ? JSON.parse(text) : null; } catch (e){}
+        if (!r.ok){
+          if (r.status === 401){
+            clearAuth();
+            STATE.loginError = 'Your session expired — sign in again.';
+            go('login');
+            var ex = new Error('Session expired'); ex.sessionExpired = true; throw ex;
+          }
+          var e2 = new Error((j && j.error) || ('Could not get permission to upload (' + r.status + ')'));
+          e2.appError = true; throw e2;
+        }
+        if (!j || !j.uploadUrl || !j.path){
+          var e3 = new Error('The upload service answered with nothing usable.');
+          e3.appError = true; throw e3;
+        }
+        return j;
+      });
+    }).then(function(ticket){
+      // The link is single-use and scoped to this one path, so it can be handed to the
+      // browser without granting anything else.
+      return fetchWithTimeout(ticket.uploadUrl, {
+        method: 'PUT', headers: {'Content-Type': type}, body: blob
+      }).then(function(r){
+        if (!r.ok){
+          var e = new Error('The photo did not finish uploading (' + r.status +
+            '). Check the connection and try again.');
+          e.appError = true; throw e;
+        }
+        return ticket.path;
+      });
+    });
+  });
 }
 
 /* A write that also refreshes the reel, in one request.
@@ -2467,7 +2602,7 @@ function problemReportTabHtml(){
 function problemReportCardHtml(p){
   var photos = STATE.photos.filter(function(ph){ return ph.ProblemReportId === p.RowId; });
   var photosHtml = photos.length ? '<div class="photolist" style="margin-top:6px">' + photos.map(function(ph){
-    return '<a class="photoitem" href="'+esc(ph.DriveUrl)+'" target="_blank" rel="noopener"><img class="thumb" loading="lazy" src="'+esc(photoThumbUrl(ph))+'" onerror="this.style.display=\'none\'"><span>photo</span></a>';
+    return '<a class="photoitem" href="'+esc(photoHref(ph))+'" target="_blank" rel="noopener"><img class="thumb" loading="lazy" src="'+esc(photoThumbUrl(ph))+'" onerror="this.style.display=\'none\'"><span>photo</span></a>';
   }).join('') + '</div>' : '';
   var isOpen = p.Status === 'Open';
   return '<div class="problemcard'+(isOpen?' open':'')+'">' +
@@ -2539,9 +2674,21 @@ function notesListHtml(sec){
     '</tbody></table>' + (all.length>20 ? '<p class="muted" style="margin-top:4px">Showing the latest 20 of '+all.length+'.</p>' : '');
 }
 
-// Drive's file-view page (getUrl()) doesn't serve raw image bytes, so <img> needs the
-// thumbnail endpoint instead — built from the stored file id, kept working at any photo count.
+/* Two eras of photo live side by side and both have to keep opening.
+ *
+ * New ones are Storage objects: the public object URL is the image itself, so it works for
+ * both the thumbnail and the link. Older ones came from Drive, whose file-view page
+ * (getUrl()) doesn't serve raw image bytes — <img> needs the thumbnail endpoint built from
+ * the stored file id, while the link wants the viewer page. Photos taken before the move
+ * were left on Drive rather than migrated: moving them was the riskiest part of the switch
+ * for the least benefit. */
+function photoHref(p){
+  if (!p) return '';
+  return p.StoragePath ? photoStorageUrl(p.StoragePath) : (p.DriveUrl || '');
+}
 function photoThumbUrl(p){
+  if (!p) return '';
+  if (p.StoragePath) return photoStorageUrl(p.StoragePath);
   return p.DriveFileId ? ('https://drive.google.com/thumbnail?id='+encodeURIComponent(p.DriveFileId)+'&sz=w300') : p.DriveUrl;
 }
 
@@ -2558,7 +2705,7 @@ function photosListHtml(sec){
   var showAll = STATE.photosExpanded === sec;
   var photos = showAll ? all.slice(0, 40) : all.slice(0, PHOTO_PREVIEW_N);
   return photos.map(function(p){
-    return '<a class="photoitem" href="'+esc(p.DriveUrl)+'" target="_blank" rel="noopener">' +
+    return '<a class="photoitem" href="'+esc(photoHref(p))+'" target="_blank" rel="noopener">' +
       '<img class="thumb" loading="lazy" src="'+esc(photoThumbUrl(p))+'" onerror="this.style.display=\'none\'">' +
       '<span>'+esc(p.Caption||fmtTime(p.Timestamp))+'</span></a>';
   }).join('') +
@@ -2812,14 +2959,44 @@ function bindOperator(){
     if (!file){ toast('Choose a photo first', true); return; }
     var caption = E('photoCaption').value.trim();
     var operator = E('opName') ? E('opName').value.trim() : getOperatorName();
+    var btn = E('submitPhotoBtn');
+    var pipeCode = STATE.pipeCode;
+    btn.disabled = true;
+
+    // Uploading is the one action slow enough to need a progress label — resizing and
+    // sending a photo takes a couple of seconds where every other write is sub-second.
+    var label = btn.textContent;
+    btn.textContent = 'Uploading…';
+    function finish(ok, msg){
+      toast(msg, !ok);
+      btn.textContent = label;
+      if (ok){ E('photoFile').value = ''; E('photoCaption').value = ''; render(); }
+      else { btn.disabled = false; }
+    }
+
+    if (isSupabaseBackend()){
+      // Two steps, and the order matters: the file reaches Storage first, then the row is
+      // written. A failed upload therefore leaves no photo row pointing at nothing. The
+      // reverse failure — object stored, row not written — leaves an orphaned object,
+      // which is invisible to the app and costs a few hundred KB.
+      uploadPhotoToSupabase(file, pipeCode)
+        .then(function(path){
+          return apiSave('addPhoto', {pipeCode: pipeCode, section: sec, caption: caption,
+            operator: operator || getOperatorName(), storagePath: path});
+        })
+        .then(function(){ finish(true, 'Photo uploaded'); })
+        .catch(function(err){ if (!err.sessionExpired) finish(false, err.message); });
+      return;
+    }
+
+    // Apps Script backend: the image rides along inside the request as base64.
     var reader = new FileReader();
-    E('submitPhotoBtn').disabled = true;
+    reader.onerror = function(){ finish(false, 'Could not read that file'); };
     reader.onload = function(){
-      apiSave('addPhoto', {pipeCode:STATE.pipeCode, section:sec, caption:caption, operator: operator || getOperatorName(),
+      apiSave('addPhoto', {pipeCode: pipeCode, section: sec, caption: caption, operator: operator || getOperatorName(),
         imageBase64: reader.result, filename: file.name, mimeType: file.type || 'image/jpeg'})
-        .then(function(){ toast('Photo uploaded'); })
-        .then(function(){ render(); })
-        .catch(function(err){ toast(err.message, true); E('submitPhotoBtn').disabled = false; });
+        .then(function(){ finish(true, 'Photo uploaded'); })
+        .catch(function(err){ finish(false, err.message); });
     };
     reader.readAsDataURL(file);
   });
