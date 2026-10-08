@@ -82,6 +82,18 @@
   .reelchip.here .dn{color:#fff;opacity:.85;}
   .reelchip.here:hover{border-color:var(--accent);}
   .reelchip.done{border-color:var(--good);}
+
+  /* The time an operator sees but cannot change. Shaped like a field so the row still
+     reads as a form, but plainly not an input. */
+  .rotime{font:600 12.5px/1.2 "Segoe UI",Arial,sans-serif;font-variant-numeric:tabular-nums;
+    color:var(--mut);background:var(--band);border:1px dashed var(--line);border-radius:3px;
+    padding:6px 7px;}
+
+  /* Targets repeated next to the field you type into. Small, muted, and never in the way
+     of the number itself. */
+  .tgtline{font-size:10px;color:var(--mut);margin:-2px 0 8px;line-height:1.5;}
+  .tgtline b{font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums;}
+  .tgtline .sep{opacity:.45;margin:0 5px;}
   .grid{display:grid;gap:8px 12px;}
   .g2{grid-template-columns:1fr 1fr;}
   .g3{grid-template-columns:repeat(3,1fr);}
@@ -447,7 +459,7 @@ var STATE = {
   view: 'home',
   pipeCode: '', workOrderCode: '',
   pipe: null, workOrder: null, siblingPipes: [],
-  readings: [], thicknessChecks: [], notes: [], photos: [], materialUsage: [], problemReports: [], downtimeEvents: [],
+  readings: [], thicknessChecks: [], notes: [], photos: [], materialUsage: [], problemReports: [], downtimeEvents: [], extruderRuns: [],
   section: 'Baseline',
   dashTimer: null,
   tvPage: 0, tvPageTimer: null, tvDrillWO: null, tvDrillPipe: null, tvSection: null, tvPipeData: null,
@@ -673,6 +685,17 @@ function supaRoute(action, a){
       p_token: t, p_kind: a.kind, p_row_id: a.rowId, p_reason: a.reason, p_operator: a.operator || ''}];
     case 'resolveVoid': return ['api_resolve_void', {
       p_token: t, p_kind: a.kind, p_row_id: a.rowId, p_approve: !!a.approve}];
+
+    case 'addExtruderRun': return ['api_add_extruder_run', {
+      p_token: t, p_pipe_code: a.pipeCode, p_section: a.section || '', p_operator: a.operator || '',
+      p_timestamp: a.timestamp, p_backer_rpm: supaNum(a.backerRpm), p_bond_rpm: supaNum(a.bondRpm),
+      p_liner_rpm: supaNum(a.linerRpm), p_line_speed: supaNum(a.lineSpeed),
+      p_melt_temp: supaNum(a.meltTemp), p_notes: a.notes || ''}];
+
+    case 'resetSection': return ['api_reset_section', {
+      p_token: t, p_pipe_code: a.pipeCode, p_section: a.section, p_confirm: a.confirm}];
+    case 'resetPipe': return ['api_reset_pipe', {
+      p_token: t, p_pipe_code: a.pipeCode, p_confirm: a.confirm, p_include_log: !!a.includeLog}];
 
     case 'archiveWorkOrder':   return ['api_archive_work_order',   {p_token: t, p_code: a.code}];
     case 'unarchiveWorkOrder': return ['api_unarchive_work_order', {p_token: t, p_code: a.code}];
@@ -1119,6 +1142,45 @@ function refreshExpandAll(){
   btn.style.display = n ? '' : 'none';
   btn.textContent = 'Open ' + n + ' closed ' + (n === 1 ? 'section' : 'sections');
 }
+/* Time is the controller's to adjust, nobody else's.
+ *
+ * Operators used to get an editable datetime on every entry, defaulted to now. It was
+ * there for the genuine case of writing up a reading taken twenty minutes ago, and the
+ * provenance columns (TimeSource / TimeOffsetMin) exist to record when it was used. In
+ * practice the field invited back-dating, and a timestamp an operator can move is a
+ * timestamp the record can't lean on.
+ *
+ * So operators now get the time shown, not offered: the entry is stamped when they press
+ * the button. The controller keeps the editable field for corrections, and those still
+ * come through marked Manual with the offset, exactly as before.
+ */
+function timeFieldHtml(id){
+  if (isAdmin()){
+    return '<div class="fld"><label>Time</label>' +
+      '<input id="'+id+'" type="datetime-local" value="'+nowLocalInputValue()+'" data-touched="0"></div>';
+  }
+  return '<div class="fld"><label>Time</label>' +
+    '<div class="rotime" id="'+id+'_ro">'+esc(fmtClock(new Date()))+'</div>' +
+    '<i class="muted" style="font-size:9px">stamped when you save</i></div>';
+}
+
+// The value to send. With no editable field there is nothing to read, so the entry is
+// stamped at the moment of saving rather than whenever the form happened to be drawn.
+function timeFieldValue(id){
+  var el = E(id);
+  return el && el.value ? el.value : nowLocalInputValue();
+}
+function timeFieldEdited(id){
+  var el = E(id);
+  return !!(el && el.dataset && el.dataset.touched === '1');
+}
+
+function fmtClock(d){
+  var h = d.getHours(), m = d.getMinutes(), ap = h >= 12 ? 'PM' : 'AM';
+  h = h % 12; if (h === 0) h = 12;
+  return h + ':' + String(m).padStart(2,'0') + ' ' + ap;
+}
+
 function nowLocalInputValue(){
   var d = new Date(), pad = function(n){ return String(n).padStart(2,'0'); };
   return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
@@ -1237,6 +1299,7 @@ function applyPipeData(data){
   STATE.notes = data.notes; STATE.photos = data.photos; STATE.materialUsage = data.materialUsage || [];
   STATE.problemReports = data.problemReports || [];
   STATE.downtimeEvents = data.downtimeEvents || [];
+  STATE.extruderRuns = data.extruderRuns || [];
 }
 
 function reloadPipe(pipeCode){
@@ -2303,9 +2366,10 @@ function viewOperator(){
   productionTimerCardHtml(wo, pipe, sec) +
 
   card('read-'+sec, 'Hourly reading',
+    targetLineHtml(wo, sec, 'reading') +
     '<div class="grid g4">' +
       '<div class="fld"><label>Operator</label><input id="opName" value="'+esc(getOperatorName())+'" placeholder="Name"></div>' +
-      '<div class="fld"><label>Time</label><input id="rdTime" type="datetime-local" value="'+nowLocalInputValue()+'" data-touched="0"></div>' +
+      ''+timeFieldHtml('rdTime')+'' +
       (sec==='Braidline' ? '<div class="fld"><label>Pitch (in)</label><input id="rdPitch" type="number" step="0.01"></div>' : '') +
       '<div class="fld"><label>OD (in)</label><input id="rdOD" type="number" step="0.001"></div>' +
       '<div class="fld"><label>Footage marker (ft)</label><input id="rdFootage" type="number" step="1"></div>' +
@@ -2314,6 +2378,7 @@ function viewOperator(){
     readingsTableHtml(sec),
     countNote(STATE.readings.filter(function(r){ return r.Section===sec && !isVoid(r); }).length, 'reading')) +
 
+  extruderCardHtml(wo, sec) +
   (sec !== 'Braidline' ? thicknessCheckCardHtml(sec) : '') +
   (sec !== 'Braidline' ? materialUsageCardHtml(sec) : '') +
 
@@ -2557,6 +2622,110 @@ function coExtruderRefHtml(key, label, size, wo, includeThickness){
   return html;
 }
 
+/* The targets, repeated right where the number is typed.
+ *
+ * They were only on the Reference targets card, which is the first thing an operator
+ * collapses — and even open, it's a scroll away from the field. Someone entering an OD
+ * shouldn't have to remember what it's supposed to be, or go looking.
+ */
+function targetLineHtml(wo, sec, what){
+  var p = sec==='Baseline' ? 'BL' : sec==='Braidline' ? 'BR' : 'CV';
+  var bits = [];
+  var push = function(label, val, tol, unit){
+    if (val === '' || val === undefined || val === null) return;
+    bits.push('<span>'+label+' <b>'+esc(val)+(unit||'')+'</b>' +
+      (tol !== '' && tol !== undefined && tol !== null ? ' &plusmn;'+esc(tol) : '') + '</span>');
+  };
+
+  if (what === 'reading'){
+    if (sec === 'Braidline') push('pitch', wo.BR_TargetPitch, wo.BR_PitchTol, '"');
+    push('OD', wo[p+'_TargetOD'], wo[p+'_ODTol'], '"');
+    push('length', wo[p+'_TargetLength'], null, ' ft');
+    push('line speed', wo[p+'_LineSpeed'], null, ' ft/min');
+  } else {
+    push('wall', wo[p+'_TargetWall'], null, '"');
+    push('ID', wo[p+'_TargetID'], null, '"');
+    push('OD', wo[p+'_TargetOD'], wo[p+'_ODTol'], '"');
+  }
+
+  if (!bits.length) return '';
+  return '<p class="tgtline">Target: ' + bits.join('<span class="sep">&middot;</span>') + '</p>';
+}
+
+/* What the extruders were ACTUALLY doing.
+ *
+ * The recipe card says what the settings should be and never changes. This is the
+ * measured counterpart, logged through the run, so a reel that came out wrong can be
+ * compared against what the line was really set to rather than what it was meant to be.
+ * Baseline runs three extruders, Coverline one, and Braidline has none — so the card
+ * simply isn't offered there.
+ */
+var EXTRUDER_FIELDS = {
+  Baseline: [
+    {id:'exBacker', col:'backerRpm', label:'Backer RPM ('+BASELINE_EXTRUDER_SIZE.backer+')', ref:'BL_BackerRPM'},
+    {id:'exBond',   col:'bondRpm',   label:'Bonding RPM ('+BASELINE_EXTRUDER_SIZE.bond+')',  ref:'BL_BondRPM'},
+    {id:'exLiner',  col:'linerRpm',  label:'Liner RPM ('+BASELINE_EXTRUDER_SIZE.liner+')',   ref:'BL_LinerRPM'}
+  ],
+  Coverline: [
+    {id:'exBacker', col:'backerRpm', label:'Extruder RPM', ref:'CV_BackerRPM'}
+  ]
+};
+
+function extruderCardHtml(wo, sec){
+  var fields = EXTRUDER_FIELDS[sec];
+  if (!fields) return '';
+  var rows = STATE.extruderRuns.filter(function(e){ return e.Section === sec; })
+    .sort(function(a,b){ return new Date(b.Timestamp) - new Date(a.Timestamp); });
+
+  // Reference values from the recipe card, so actual sits next to intended.
+  var refBits = fields.map(function(f){
+    var v = wo[f.ref];
+    return (v === '' || v === undefined) ? null : f.label.replace(/ \(.*\)/,'') + ' <b>' + esc(v) + '</b>';
+  }).filter(Boolean);
+  if (wo[(sec==='Baseline'?'BL':'CV')+'_LineSpeed'] !== '' && wo[(sec==='Baseline'?'BL':'CV')+'_LineSpeed'] !== undefined){
+    refBits.push('line speed <b>'+esc(wo[(sec==='Baseline'?'BL':'CV')+'_LineSpeed'])+' ft/min</b>');
+  }
+
+  return card('extruder-'+sec, 'Extruder &mdash; actual',
+    '<p class="muted" style="margin-top:0">What the line was really running. Log it at setup and whenever something is changed.</p>' +
+    (refBits.length ? '<p class="tgtline">Recipe: '+refBits.join('<span class="sep">&middot;</span>')+'</p>' : '') +
+    '<div class="grid g4">' +
+      fields.map(function(f){
+        return '<div class="fld"><label>'+f.label+'</label>' +
+          '<input id="'+f.id+'" type="number" step="0.1"></div>';
+      }).join('') +
+      '<div class="fld"><label>Actual line speed (ft/min)</label><input id="exSpeed" type="number" step="0.1"></div>' +
+      '<div class="fld"><label>Melt temp (&deg;F)</label><input id="exMelt" type="number" step="1"></div>' +
+      '<div class="fld"><label>Operator</label><input id="exOperator" value="'+esc(getOperatorName())+'"></div>' +
+      timeFieldHtml('exTime') +
+    '</div>' +
+    '<div class="row" style="margin-top:8px">' +
+      '<div class="fld" style="flex:1"><label>Note (optional)</label><input id="exNotes" placeholder="e.g. bumped backer to hold OD"></div>' +
+      '<button class="btn pri" id="submitExtruderBtn" style="align-self:flex-end">Log extruder settings</button>' +
+    '</div>' +
+    (rows.length ? extruderTableHtml(rows, fields) : '<p class="muted">Nothing logged yet.</p>'),
+    countNote(rows.filter(function(e){ return !isVoid(e); }).length, 'entry'));
+}
+
+function extruderTableHtml(rows, fields){
+  return '<table style="margin-top:10px"><thead><tr><th class="l">Time</th><th class="l">Operator</th>' +
+    fields.map(function(f){ return '<th>'+f.label.replace(/ \(.*\)/,'')+'</th>'; }).join('') +
+    '<th>Line speed</th><th>Melt</th><th class="l">Note</th><th class="l">Void</th></tr></thead><tbody>' +
+    rows.map(function(e){
+      var voided = isVoid(e);
+      return '<tr'+(voided?' class="voided"':'')+'>' +
+        '<td class="l">'+esc(fmtTime(e.Timestamp))+'</td><td class="l">'+esc(e.Operator)+'</td>' +
+        fields.map(function(f){
+          var key = f.col === 'backerRpm' ? 'BackerRPM' : f.col === 'bondRpm' ? 'BondRPM' : 'LinerRPM';
+          return '<td class="num">'+esc(e[key] !== '' ? e[key] : '—')+'</td>';
+        }).join('') +
+        '<td class="num">'+esc(e.LineSpeed !== '' ? e.LineSpeed : '—')+'</td>' +
+        '<td class="num">'+esc(e.MeltTemp !== '' ? e.MeltTemp : '—')+'</td>' +
+        '<td class="l">'+esc(e.Notes || '')+'</td>' +
+        '<td class="l">'+rpVoidCell(e, 'extruder')+'</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+
 function readingsTableHtml(sec){
   var rows = STATE.readings.filter(function(r){ return r.Section===sec; })
     .sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); }).slice(0,20);
@@ -2664,10 +2833,11 @@ function thicknessCheckCardHtml(sec){
   var checks = STATE.thicknessChecks.filter(function(c){ return c.Section===sec; })
     .sort(function(a,b){ return new Date(b.Timestamp)-new Date(a.Timestamp); });
   return card('thick-'+sec, 'Thickness check ('+n+'-point) &mdash; Start / End',
+    targetLineHtml(STATE.workOrder, sec, 'thickness') +
     '<div class="grid g4">' +
       '<div class="fld"><label>Position</label><select id="tcPosition"><option>Start</option><option>End</option></select></div>' +
       '<div class="fld"><label>Operator</label><input id="tcOperator" value="'+esc(getOperatorName())+'"></div>' +
-      '<div class="fld"><label>Time</label><input id="tcTime" type="datetime-local" value="'+nowLocalInputValue()+'"></div>' +
+      ''+timeFieldHtml('tcTime')+'' +
       '<div class="fld"><label>OD (in)</label><input id="tcOD" type="number" step="0.001"></div>' +
     '</div>' +
     '<div class="fld" style="margin:10px 0 0"><label>Wall thickness at each point (in) &mdash; looking down the bore</label></div>' +
@@ -2705,7 +2875,7 @@ function materialUsageCardHtml(sec){
       '<div class="fld"><label>Material</label><input id="matName" list="matSuggestions" placeholder="e.g. Nylon 290 - Base"></div>' +
       '<div class="fld"><label>Lot / batch # (optional)</label><input id="matLot"></div>' +
       '<div class="fld"><label>Operator</label><input id="matOperator" value="'+esc(getOperatorName())+'"></div>' +
-      '<div class="fld"><label>Time</label><input id="matTime" type="datetime-local" value="'+nowLocalInputValue()+'"></div>' +
+      ''+timeFieldHtml('matTime')+'' +
     '</div>' +
     '<div class="grid g4" style="margin-top:8px">' +
       '<div class="fld"><label>Start weight (lbs)</label><input id="matStart" type="number" step="0.1"></div>' +
@@ -2752,7 +2922,7 @@ function problemReportTabHtml(){
       '<div class="fld"><label>Section</label><select id="probSection"><option>General</option><option>Baseline</option><option>Braidline</option><option>Coverline</option></select></div>' +
       '<div class="fld"><label>Footage marker (ft)</label><input id="probFootage" type="number" step="1" placeholder="where on the reel"></div>' +
       '<div class="fld"><label>Operator</label><input id="probOperator" value="'+esc(getOperatorName())+'"></div>' +
-      '<div class="fld"><label>Time</label><input id="probTime" type="datetime-local" value="'+nowLocalInputValue()+'"></div>' +
+      ''+timeFieldHtml('probTime')+'' +
     '</div>' +
     '<div class="fld" style="margin-top:8px"><label>Description</label><textarea id="probDescription" placeholder="What happened, and where..."></textarea></div>' +
     '<div class="fld" style="margin-top:8px"><label>Photos (optional, multiple allowed)</label><input id="probPhotos" type="file" accept="image/*" capture="environment" multiple></div>' +
@@ -2794,7 +2964,7 @@ function bindProblemReportTab(){
     if (!description){ toast('Enter a description', true); return; }
     var section = E('probSection').value;
     var footage = E('probFootage').value;
-    var ts = new Date(E('probTime').value).toISOString();
+    var ts = new Date(timeFieldValue('probTime')).toISOString();
     var files = Array.prototype.slice.call(E('probPhotos').files || []);
     E('submitProblemBtn').disabled = true;
 
@@ -2989,6 +3159,10 @@ function bindOperator(){
   });
 
   bindVoidButtons(E('app'));
+  // rpVoidCell draws Approve/Reject for an admin wherever it is used, but only the Reports
+  // page ever bound them — so a controller looking at a pending void from the operator
+  // view got two buttons that did nothing.
+  bindVoidDecisions(E('app'));
   var showAllPhotos = E('showAllPhotosBtn');
   if (showAllPhotos) showAllPhotos.addEventListener('click', function(){ STATE.photosExpanded = STATE.section; render(); });
 
@@ -3030,9 +3204,8 @@ function bindOperator(){
      *
      * The server doesn't take this on faith — it compares the claimed time against when it
      * actually received the reading and overrides a "Device" claim that doesn't hold up. */
-    var timeEl = E('rdTime');
-    var edited = timeEl.dataset.touched === '1';
-    var ts = edited ? new Date(timeEl.value).toISOString() : new Date().toISOString();
+    var edited = timeFieldEdited('rdTime');
+    var ts = edited ? new Date(timeFieldValue('rdTime')).toISOString() : new Date().toISOString();
     var timeSource = edited ? 'Manual' : 'Device';
     var odVal = num(E('rdOD').value);
     var footageVal = E('rdFootage') ? E('rdFootage').value : '';
@@ -3088,7 +3261,7 @@ function bindOperator(){
       var points = [];
       for (var i=0;i<pointCount(sec);i++) points.push('');
       qsa('.tPoint').forEach(function(inp){ points[Number(inp.dataset.i)] = inp.value; });
-      var ts = new Date(E('tcTime').value).toISOString();
+      var ts = new Date(timeFieldValue('tcTime')).toISOString();
       E('submitCheckBtn').disabled = true;
       apiSave('addThicknessCheck', {pipeCode:STATE.pipeCode, section:sec, position:E('tcPosition').value, od:od, points:points, operator:operator, timestamp:ts})
         .then(function(){ toast('Thickness check saved'); })
@@ -3108,7 +3281,7 @@ function bindOperator(){
       setOperatorName(operator);
       var material = E('matName').value.trim();
       if (!material){ toast('Enter a material name', true); return; }
-      var ts = new Date(E('matTime').value).toISOString();
+      var ts = new Date(timeFieldValue('matTime')).toISOString();
       E('submitMaterialBtn').disabled = true;
       apiSave('addMaterialUsage', {
         pipeCode: STATE.pipeCode, section: sec, material: material, lotNumber: E('matLot').value.trim(),
@@ -3118,6 +3291,34 @@ function bindOperator(){
         .catch(function(err){ toast(err.message, true); E('submitMaterialBtn').disabled = false; });
     });
   }
+
+  var exBtn = E('submitExtruderBtn');
+  if (exBtn) exBtn.addEventListener('click', function(){
+    var operator = E('exOperator').value.trim();
+    if (!operator){ toast('Operator name is required', true); return; }
+    setOperatorName(operator);
+    var vals = {
+      backerRpm: E('exBacker') ? E('exBacker').value : '',
+      bondRpm:   E('exBond')   ? E('exBond').value   : '',
+      linerRpm:  E('exLiner')  ? E('exLiner').value  : '',
+      lineSpeed: E('exSpeed').value,
+      meltTemp:  E('exMelt').value
+    };
+    // Caught here as well as in the RPC: a blank form submitted by accident should say so
+    // immediately rather than after a round trip.
+    if (!Object.keys(vals).some(function(k){ return vals[k] !== ''; })){
+      toast('Enter at least one value', true); return;
+    }
+    exBtn.disabled = true;
+    apiSave('addExtruderRun', Object.assign({
+      pipeCode: STATE.pipeCode, section: sec, operator: operator,
+      timestamp: new Date(timeFieldValue('exTime')).toISOString(),
+      notes: E('exNotes').value.trim()
+    }, vals))
+      .then(function(){ toast('Extruder settings logged'); })
+      .then(function(){ render(); })
+      .catch(function(err){ toast(err.message, true); exBtn.disabled = false; });
+  });
 
   E('submitNoteBtn').addEventListener('click', function(){
     var text = E('noteText').value.trim();
@@ -3485,9 +3686,11 @@ function renderPipeDetail(){
         odChartSvg(series, tt, chartProblems)
         : '<p class="muted" style="padding:40px 0;text-align:center;font-size:14px">No OD readings yet for '+sec+'.</p>') +
       (targetLen!=='' || actualLen!=='' ? '<div class="muted" style="margin-top:10px;font-size:11px">Length — target '+fmtTol(targetLen)+' ft &middot; actual '+fmtTol(actualLen)+' ft</div>' : '') +
-    '</section>';
+    '</section>' +
+    resetCardHtml(pipe, sec, data);
 
   E('pdBackBtn').addEventListener('click', function(){ go('woDashboard', {workOrderCode: pipe.WorkOrderCode}); });
+  bindResetCard(pipe);
   var mgBtn = E('pdManageProblemsBtn');
   if (mgBtn) mgBtn.addEventListener('click', function(){ go('operator', {pipeCode: pipe.PipeCode, section: 'Problems'}); });
   E('pdOpenOpBtn').addEventListener('click', function(){ go('operator', {pipeCode: pipe.PipeCode, section: sec}); });
@@ -3496,6 +3699,91 @@ function renderPipeDetail(){
   });
   qsa('[data-detailsec]', root).forEach(function(b){
     b.addEventListener('click', function(){ STATE.pdSection = b.dataset.detailsec; renderPipeDetail(); });
+  });
+}
+
+/* ===================== RESET A REEL (controller only) =====================
+ *
+ * Voiding is for a measurement that was taken and was wrong. Reset is for a reel that was
+ * never really run — a demo, a training session, a reel someone logged against by mistake.
+ * Those are different problems and want different tools: filling the permanent record with
+ * hundreds of struck-out demo rows would make the void list useless for its real job, so
+ * this deletes.
+ *
+ * It asks for the reel code to be retyped, the same shape as permanently deleting a work
+ * order, because it is the same kind of irreversible.
+ */
+function resetCardHtml(pipe, sec, data){
+  if (!isAdmin()) return '';
+
+  var counts = {
+    readings: (data.readings||[]).length,
+    thicknessChecks: (data.thicknessChecks||[]).length,
+    materialUsage: (data.materialUsage||[]).length,
+    extruderRuns: (data.extruderRuns||[]).length,
+    notes: (data.notes||[]).length,
+    problemReports: (data.problemReports||[]).length,
+    photos: (data.photos||[]).length
+  };
+  var secCount = ['readings','thicknessChecks','materialUsage','extruderRuns'].reduce(function(n, k){
+    return n + (data[k]||[]).filter(function(x){ return x.Section === sec; }).length;
+  }, 0);
+  var total = counts.readings + counts.thicknessChecks + counts.materialUsage + counts.extruderRuns;
+
+  return '<section class="card" style="border-color:var(--crit)">' +
+    '<h2>Reset this reel</h2>' +
+    '<p class="muted" style="margin-top:0">Deletes measurements outright and puts the section back to Not started &mdash; ' +
+      'clearing the timer, the progress bar and the recorded length. Use it for a reel that was never really run. ' +
+      'To strike out a measurement that <em>was</em> taken, void it instead.</p>' +
+    '<div class="row" style="margin-top:10px">' +
+      '<div class="fld" style="max-width:220px"><label>Type the reel code to confirm</label>' +
+        '<input id="rsConfirm" placeholder="'+esc(pipe.PipeCode)+'" autocomplete="off"></div>' +
+      '<span class="spacer"></span>' +
+    '</div>' +
+    '<div class="row" style="margin-top:10px;align-items:center">' +
+      '<button class="btn sm danger" id="rsSectionBtn">Reset '+esc(sec)+' only</button>' +
+      '<span class="muted" style="font-size:10px">'+secCount+' '+(secCount===1?'entry':'entries')+' in '+esc(sec)+'</span>' +
+    '</div>' +
+    '<div class="row" style="margin-top:8px;align-items:center">' +
+      '<button class="btn sm danger" id="rsPipeBtn">Reset the whole reel</button>' +
+      '<label style="display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--mut)">' +
+        '<input type="checkbox" id="rsIncludeLog" style="width:auto"> also clear notes and problem reports</label>' +
+      '<span class="muted" style="font-size:10px">'+total+' measurement '+(total===1?'entry':'entries')+
+        ', '+counts.notes+' notes, '+counts.problemReports+' problem reports</span>' +
+    '</div>' +
+    (counts.photos ? '<p class="muted" style="font-size:10px;margin:10px 0 0">' +
+      counts.photos+' photo'+(counts.photos===1?'':'s')+' will be kept. Image files live in Storage, which can’t be ' +
+      'cleared from here without orphaning them &mdash; remove those from the Supabase Storage browser if the reel is being reused.</p>' : '') +
+  '</section>';
+}
+
+function bindResetCard(pipe){
+  var secBtn = E('rsSectionBtn'), pipeBtn = E('rsPipeBtn');
+  if (!secBtn || !pipeBtn) return;
+
+  function confirmCode(){
+    var v = (E('rsConfirm').value || '').trim();
+    if (v !== pipe.PipeCode){
+      toast('Type ' + pipe.PipeCode + ' exactly to confirm', true);
+      return null;
+    }
+    return v;
+  }
+  function run(action, body, what, btn){
+    var code = confirmCode();
+    if (code === null) return;
+    if (!confirm('Reset ' + what + '? This deletes those entries permanently.')) return;
+    btn.disabled = true;
+    apiPost(action, Object.assign({pipeCode: pipe.PipeCode, confirm: code}, body))
+      .then(function(){ toast(what + ' reset'); loadPipeDetail(pipe.PipeCode); })
+      .catch(function(err){ toast(err.message, true); btn.disabled = false; });
+  }
+
+  secBtn.addEventListener('click', function(){
+    run('resetSection', {section: STATE.pdSection}, STATE.pdSection + ' on ' + pipe.PipeCode, secBtn);
+  });
+  pipeBtn.addEventListener('click', function(){
+    run('resetPipe', {includeLog: E('rsIncludeLog').checked}, 'all of ' + pipe.PipeCode, pipeBtn);
   });
 }
 
