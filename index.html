@@ -329,9 +329,26 @@
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 <script>
 /* ============================= CONFIG ============================= */
-// Paste your deployed Apps Script Web App URL here (ends in /exec).
-// Can also be set per-browser from the Settings row on Home for testing.
-var DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbz2HsHOh07yVRD6WJoDIPfHlWxysj4Scwr42g1WTgmshCs8r_qr1raS7o5i-cgTZG_-Jg/exec';
+/* The backend. Supabase's PostgREST endpoint (ends in /rest/v1/); the code also still
+ * speaks to an Apps Script deployment (/exec) if this is pointed at one, which is the way
+ * back if Supabase ever has to be abandoned in a hurry. Either can be set per-browser from
+ * the Settings row on Home.
+ *
+ * Apps Script was the original backend and the reason for leaving it was measured, not
+ * assumed: with no token and zero spreadsheet work, round trips to /exec came back at
+ * 171ms, 673, 742, 968, 1532, 5549, 14656 and 17831ms, and roughly 2 requests in 11
+ * returned an HTML 404 instead of data. The same calls through Supabase run 108-158ms.
+ * Three rounds of backend optimisation before that measurement were shaving a ~768ms
+ * slice off a 5-20 second wait.
+ *
+ * A browser that has previously saved an API URL keeps using it — localStorage wins over
+ * this line — so changing the default does NOT move a device that was pointed at Supabase
+ * (or Apps Script) by hand. Clear the Settings field to fall back to this.
+ */
+var DEFAULT_API_URL = 'https://rkcdylfubmupzhdcgdga.supabase.co/rest/v1/';
+
+// Kept for the fallback path and so the Settings field can be filled in from memory.
+var APPS_SCRIPT_API_URL = 'https://script.google.com/macros/s/AKfycbz2HsHOh07yVRD6WJoDIPfHlWxysj4Scwr42g1WTgmshCs8r_qr1raS7o5i-cgTZG_-Jg/exec';
 
 // Reading localStorage THROWS (not returns null) when site data is blocked — private
 // browsing, a locked-down tablet, a file:// or data: URL. Unguarded, that kills the
@@ -1226,7 +1243,7 @@ function viewLogin(){
     '</section>' +
     '<section class="card no-print">' +
       '<h2>API URL</h2>' +
-      '<p class="muted" style="margin-top:0;font-size:10.5px">Only needs changing if this browser points at a different Apps Script deployment.</p>' +
+      '<p class="muted" style="margin-top:0;font-size:10.5px">Only needs changing if this browser should point at a different backend.</p>' +
       '<div class="row">' +
         '<div class="fld" style="flex:1"><input id="loginApiUrl" value="'+esc(API_URL==DEFAULT_API_URL?'':API_URL)+'" placeholder="'+esc(DEFAULT_API_URL)+'"></div>' +
         '<button class="btn sm" id="loginSaveApiBtn" style="align-self:flex-end">Save</button>' +
@@ -1401,7 +1418,7 @@ function renderAdmin(){
     '<h2>Operator QR key</h2>' +
     '<p class="muted" style="margin-top:0">Every reel tag you print carries this key, and scanning a tag is what signs an operator in. ' +
       'Rotating it immediately blocks every tag already out on the floor &mdash; you would have to reprint them &mdash; so only rotate if a tag has gone somewhere it shouldn&rsquo;t.</p>' +
-    '<div class="keybox">'+esc(STATE.operatorKey || '(not set — run setup() in the Apps Script editor)')+'</div>' +
+    '<div class="keybox">'+esc(STATE.operatorKey || '(not set — run setup_seed() in the Supabase SQL editor)')+'</div>' +
     '<div class="row" style="margin-top:10px">' +
       '<button class="btn danger" id="rotateKeyBtn">Rotate key</button>' +
       '<span class="muted" style="font-size:10px">Reprint every active reel&rsquo;s tag afterward.</span>' +
@@ -1561,7 +1578,7 @@ function viewHomeAdmin(){
   '<section class="card no-print">' +
     '<h2>Settings</h2>' +
     '<div class="row">' +
-      '<div class="fld" style="flex:1"><label>API URL (Apps Script web app)</label>' +
+      '<div class="fld" style="flex:1"><label>API URL (backend)</label>' +
         '<input id="apiUrlInput" value="'+esc(API_URL==DEFAULT_API_URL?'':API_URL)+'" placeholder="'+esc(DEFAULT_API_URL)+'"></div>' +
       '<button class="btn sm" id="saveApiBtn" style="align-self:flex-end">Save</button>' +
     '</div>' +
