@@ -94,6 +94,15 @@
   .tgtline{font-size:10px;color:var(--mut);margin:-2px 0 8px;line-height:1.5;}
   .tgtline b{font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums;}
   .tgtline .sep{opacity:.45;margin:0 5px;}
+
+  /* Historical entry grid. Tight rows and full-width cells, because this is typed in bulk
+     from a paper log rather than filled in one field at a time. */
+  table.hgrid{margin-top:4px;}
+  table.hgrid th{font-size:9px;}
+  table.hgrid td{padding:2px 3px;}
+  table.hgrid input{padding:4px 6px;font-variant-numeric:tabular-nums;}
+  table.hgrid input:focus{outline:2px solid var(--accent);outline-offset:-2px;}
+  table.hgrid .h-del{padding:3px 7px;line-height:1;color:var(--mut);}
   .grid{display:grid;gap:8px 12px;}
   .g2{grid-template-columns:1fr 1fr;}
   .g3{grid-template-columns:repeat(3,1fr);}
@@ -625,7 +634,7 @@ function supaRoute(action, a){
     case 'pulse':                  return ['api_pulse', {p_token: t}];
     case 'getPipe':                return ['api_get_pipe', {p_token: t, p_pipe_code: a.pipeCode}];
     case 'getWorkOrderInfo':       return ['api_get_work_order_info', {p_token: t, p_code: a.code}];
-    case 'dashboard':              return ['api_dashboard', {p_token: t}];
+    case 'dashboard':              return ['api_dashboard', {p_token: t, p_include_historical: !!a.includeHistorical}];
     case 'getOperatorKey':         return ['api_get_operator_key', {p_token: t}];
     case 'listAccounts':           return ['api_list_accounts', {p_token: t}];
     case 'listArchive':            return ['api_list_archive', {p_token: t}];
@@ -695,6 +704,9 @@ function supaRoute(action, a){
       p_timestamp: a.timestamp, p_backer_rpm: supaNum(a.backerRpm), p_bond_rpm: supaNum(a.bondRpm),
       p_liner_rpm: supaNum(a.linerRpm), p_line_speed: supaNum(a.lineSpeed),
       p_melt_temp: supaNum(a.meltTemp), p_notes: a.notes || ''}];
+
+    case 'importHistorical': return ['api_import_historical', {
+      p_token: t, p_wo: a.workOrder, p_pipe_code: a.pipeCode, p_sections: a.sections}];
 
     case 'resetSection': return ['api_reset_section', {
       p_token: t, p_pipe_code: a.pipeCode, p_section: a.section, p_confirm: a.confirm}];
@@ -3859,6 +3871,17 @@ function renderPipeDetail(){
         : '<p class="muted" style="padding:40px 0;text-align:center;font-size:14px">No OD readings yet for '+sec+'.</p>') +
       (targetLen!=='' || actualLen!=='' ? '<div class="muted" style="margin-top:10px;font-size:11px">Length — target '+fmtTol(targetLen)+' ft &middot; actual '+fmtTol(actualLen)+' ft</div>' : '') +
     '</section>' +
+    // Braidline carries a second measurement that matters as much as OD.
+    (sec === 'Braidline'
+      ? (function(){
+          var ps = data.readings.filter(function(r){ return r.Section===sec && r.Type==='Pitch' && !isVoid(r); })
+            .sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); });
+          var ptt = (wo.BR_TargetPitch!=='' && wo.BR_TargetPitch!==undefined && wo.BR_PitchTol!=='' && wo.BR_PitchTol!==undefined)
+            ? {target:Number(wo.BR_TargetPitch), tol:Number(wo.BR_PitchTol)} : null;
+          var block = rpMeasureBlockHtml(ps, 'Pitch', ptt, chartProblems);
+          return block ? '<section class="card">'+block+'</section>' : '';
+        })()
+      : '') +
     resetCardHtml(pipe, sec, data);
 
   if (keepConfirm !== null && E('rsConfirm')) E('rsConfirm').value = keepConfirm;
@@ -4369,9 +4392,14 @@ function bindReports(){
   }, 60000);
 }
 
+/* Reports deliberately does NOT use getDashboard().
+ *
+ * That cache is shared with the live board, which excludes historical reels — reusing it
+ * here would hide every paper record from the one screen meant to show them. Reports pays
+ * for its own call and asks for history explicitly. */
 function loadReportIndex(){
   STATE.rpPipe = null; STATE.rpData = null;
-  getDashboard().then(function(d){ STATE.rpIndex = d; renderReportIndex(); })
+  apiGet('dashboard', {includeHistorical: true}).then(function(d){ STATE.rpIndex = d; renderReportIndex(); })
     .catch(function(err){
       if (err && err.sessionExpired) return;
       var r = E('rpRoot'); if (r) r.innerHTML = '<p class="flag">'+esc(err.message)+'</p>';
@@ -4413,8 +4441,10 @@ function renderReportIndex(){
   }
 
   root.innerHTML =
-    '<h1 style="font-size:13px;margin-bottom:4px">Reports</h1>' +
-    '<p class="muted" style="margin-top:0">Pick a reel for its full live record — setup reference, every measurement, the OD chart and run speed. Refreshes itself every 20 seconds while open.</p>' +
+    '<div class="row" style="margin-bottom:4px"><h1 style="font-size:13px;margin:0">Reports</h1>' +
+      '<span class="spacer"></span>' +
+      '<button class="btn sm" id="rpHistBtn">+ Enter a past reel (from paper)</button></div>' +
+    '<p class="muted" style="margin-top:0">Pick a reel for its full record — setup reference, every measurement, the trend charts and run speed. Updates itself as readings are logged.</p>' +
     '<section class="card"><h2>In production</h2>' +
       (d.active.length ? d.active.map(groupBlock).join('') : '<p class="muted">Nothing in production right now.</p>') +
     '</section>' +
@@ -4425,9 +4455,316 @@ function renderReportIndex(){
   qsa('[data-report]', root).forEach(function(b){
     b.addEventListener('click', function(){ loadReport(b.dataset.report); });
   });
+  E('rpHistBtn').addEventListener('click', renderHistoricalForm);
 }
 
-/* ---------- report building blocks ---------- */
+/* ===================== HISTORICAL ENTRY (controller only) =====================
+ *
+ * Reels that ran before the tracker existed, typed up from the paper logs.
+ *
+ * This is the one place in the app where a date can be entered by hand. Operators lost
+ * that on purpose — a timestamp anyone can move is a timestamp the record can't lean on —
+ * but a paper log is nothing but hand-entered dates, so the capability lives here, behind
+ * the controller's login, and every row it writes is marked "from paper log" rather than
+ * passed off as something the app stamped.
+ *
+ * The grid is built for volume: tab moves across and then down, Enter adds a row, and a
+ * block pasted from a spreadsheet fills as many rows as it has lines. Typing up dozens of
+ * reels one form field at a time would be the real cost of this feature.
+ */
+var HIST = null;
+
+function histBlank(){
+  return {
+    wo: {code:'', customer:'', productCode:'', pipeSize:'', projectLength:''},
+    spec: {BL_TargetOD:'', BL_ODTol:'', BR_TargetOD:'', BR_ODTol:'', BR_TargetPitch:'', BR_PitchTol:'', CV_TargetOD:'', CV_ODTol:''},
+    pipeCode: '',
+    operator: '',
+    sections: {
+      Baseline:  {use:true, length:'', date:'', rows: histRows(6)},
+      Braidline: {use:true, length:'', date:'', rows: histRows(6)},
+      Coverline: {use:true, length:'', date:'', rows: histRows(6)}
+    }
+  };
+}
+function histRows(n){
+  var a = [];
+  for (var i=0;i<n;i++) a.push({time:'', od:'', pitch:'', footage:''});
+  return a;
+}
+
+var HIST_SECTIONS = ['Baseline','Braidline','Coverline'];
+
+function renderHistoricalForm(){
+  if (!HIST) HIST = histBlank();
+  var root = E('rpRoot');
+  if (!root) return;
+
+  root.innerHTML =
+    '<div class="row" style="margin-bottom:10px">' +
+      '<div><b style="font-size:17px">Enter a past reel</b> ' +
+        '<span class="muted">from the paper production log</span></div>' +
+      '<span class="spacer"></span>' +
+      '<button class="btn sm" id="hCancel">Back to reports</button>' +
+      '<button class="btn sm pri" id="hSave">Save this reel</button>' +
+    '</div>' +
+
+    '<section class="card">' +
+      '<h2>Work order</h2>' +
+      '<p class="muted" style="margin-top:0">Reusing a code you have already entered adds this reel to it. ' +
+        'These records stay off the dashboard and the TV board &mdash; they show up in Reports and the Archive.</p>' +
+      '<div class="grid g4">' +
+        '<div class="fld"><label>Work order code</label><input id="h_woCode" value="'+esc(HIST.wo.code)+'" placeholder="e.g. BL20250412"></div>' +
+        '<div class="fld"><label>Customer</label><input id="h_customer" value="'+esc(HIST.wo.customer)+'"></div>' +
+        '<div class="fld"><label>Product code</label><input id="h_productCode" value="'+esc(HIST.wo.productCode)+'"></div>' +
+        '<div class="fld"><label>Pipe size</label><input id="h_pipeSize" value="'+esc(HIST.wo.pipeSize)+'"></div>' +
+      '</div>' +
+      '<div class="grid g4" style="margin-top:8px">' +
+        '<div class="fld"><label>Reel code</label><input id="h_pipeCode" value="'+esc(HIST.pipeCode)+'" placeholder="e.g. BL20250412-1"></div>' +
+        '<div class="fld"><label>Operator (optional)</label><input id="h_operator" value="'+esc(HIST.operator)+'" placeholder="who ran it"></div>' +
+        '<div class="fld"><label>Project length (ft)</label><input id="h_projectLength" type="number" step="1" value="'+esc(HIST.wo.projectLength)+'"></div>' +
+      '</div>' +
+    '</section>' +
+
+    '<section class="card">' +
+      '<h2>Targets at the time (optional)</h2>' +
+      '<p class="muted" style="margin-top:0">Only used to mark old readings in or out of tolerance on the report. ' +
+        'Leave blank if the paper log doesn&rsquo;t say and the readings will simply show no tolerance verdict.</p>' +
+      '<div class="grid g4">' +
+        '<div class="fld"><label>Baseline target OD</label><input id="h_BL_TargetOD" type="number" step="0.001" value="'+esc(HIST.spec.BL_TargetOD)+'"></div>' +
+        '<div class="fld"><label>Baseline OD tol &plusmn;</label><input id="h_BL_ODTol" type="number" step="0.001" value="'+esc(HIST.spec.BL_ODTol)+'"></div>' +
+        '<div class="fld"><label>Braid target OD</label><input id="h_BR_TargetOD" type="number" step="0.001" value="'+esc(HIST.spec.BR_TargetOD)+'"></div>' +
+        '<div class="fld"><label>Braid OD tol &plusmn;</label><input id="h_BR_ODTol" type="number" step="0.001" value="'+esc(HIST.spec.BR_ODTol)+'"></div>' +
+        '<div class="fld"><label>Braid target pitch</label><input id="h_BR_TargetPitch" type="number" step="0.01" value="'+esc(HIST.spec.BR_TargetPitch)+'"></div>' +
+        '<div class="fld"><label>Pitch tol &plusmn;</label><input id="h_BR_PitchTol" type="number" step="0.01" value="'+esc(HIST.spec.BR_PitchTol)+'"></div>' +
+        '<div class="fld"><label>Cover target OD</label><input id="h_CV_TargetOD" type="number" step="0.001" value="'+esc(HIST.spec.CV_TargetOD)+'"></div>' +
+        '<div class="fld"><label>Cover OD tol &plusmn;</label><input id="h_CV_ODTol" type="number" step="0.001" value="'+esc(HIST.spec.CV_ODTol)+'"></div>' +
+      '</div>' +
+    '</section>' +
+
+    HIST_SECTIONS.map(histSectionHtml).join('') +
+
+    '<p class="muted" style="font-size:10.5px">Every reading saved here is stamped <b>from paper log</b> in the report, ' +
+      'so a transcribed measurement is never mistaken for one the app captured at the line.</p>';
+
+  bindHistoricalForm();
+}
+
+function histSectionHtml(sec){
+  var s = HIST.sections[sec];
+  var isBraid = sec === 'Braidline';
+  return '<section class="card" data-hsec="'+sec+'">' +
+    '<div class="row"><h2 style="border:none;margin:0;flex:1">'+sec+'</h2>' +
+      '<label style="display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--mut)">' +
+        '<input type="checkbox" class="h-use" data-sec="'+sec+'" style="width:auto"'+(s.use?' checked':'')+'> ran this section</label>' +
+    '</div>' +
+    '<div class="h-body"'+(s.use?'':' style="display:none"')+'>' +
+      '<div class="grid g4" style="margin-top:8px">' +
+        '<div class="fld"><label>Final length (ft)</label><input class="h-len" data-sec="'+sec+'" type="number" step="1" value="'+esc(s.length)+'"></div>' +
+        '<div class="fld"><label>Date run</label><input class="h-date" data-sec="'+sec+'" type="date" value="'+esc(s.date)+'"></div>' +
+      '</div>' +
+      '<p class="tgtline" style="margin-top:10px">Readings &mdash; time is optional; leave it blank and the reading is filed under the date above. ' +
+        'Paste a block from a spreadsheet into any cell to fill several rows at once.</p>' +
+      '<table class="hgrid"><thead><tr>' +
+        '<th style="width:90px">Time</th><th>OD (in)</th>' + (isBraid ? '<th>Pitch (in)</th>' : '') +
+        '<th>Footage (ft)</th><th style="width:30px">&nbsp;</th>' +
+      '</tr></thead><tbody>' +
+      s.rows.map(function(r, i){
+        return '<tr>' +
+          '<td><input class="h-cell" data-sec="'+sec+'" data-i="'+i+'" data-f="time" value="'+esc(r.time)+'" placeholder="09:15"></td>' +
+          '<td><input class="h-cell" data-sec="'+sec+'" data-i="'+i+'" data-f="od" value="'+esc(r.od)+'"></td>' +
+          (isBraid ? '<td><input class="h-cell" data-sec="'+sec+'" data-i="'+i+'" data-f="pitch" value="'+esc(r.pitch)+'"></td>' : '') +
+          '<td><input class="h-cell" data-sec="'+sec+'" data-i="'+i+'" data-f="footage" value="'+esc(r.footage)+'"></td>' +
+          '<td><button class="btn sm h-del" data-sec="'+sec+'" data-i="'+i+'" title="Remove this row">&times;</button></td>' +
+        '</tr>';
+      }).join('') +
+      '</tbody></table>' +
+      '<div class="row" style="margin-top:6px">' +
+        '<button class="btn sm h-add" data-sec="'+sec+'" data-n="5">+ 5 rows</button>' +
+        '<button class="btn sm h-add" data-sec="'+sec+'" data-n="20">+ 20 rows</button>' +
+        '<span class="muted" style="font-size:10px">Enter on the last row adds another</span>' +
+      '</div>' +
+    '</div>' +
+  '</section>';
+}
+
+function bindHistoricalForm(){
+  var root = E('rpRoot');
+
+  // Scalar fields write straight into HIST so a re-render never loses typing.
+  [['h_woCode','code'],['h_customer','customer'],['h_productCode','productCode'],
+   ['h_pipeSize','pipeSize'],['h_projectLength','projectLength']].forEach(function(p){
+    E(p[0]).addEventListener('input', function(){ HIST.wo[p[1]] = this.value; });
+  });
+  E('h_pipeCode').addEventListener('input', function(){ HIST.pipeCode = this.value; });
+  E('h_operator').addEventListener('input', function(){ HIST.operator = this.value; });
+  Object.keys(HIST.spec).forEach(function(k){
+    var el = E('h_'+k);
+    if (el) el.addEventListener('input', function(){ HIST.spec[k] = this.value; });
+  });
+
+  qsa('.h-use', root).forEach(function(cb){
+    cb.addEventListener('change', function(){
+      HIST.sections[cb.dataset.sec].use = cb.checked;
+      var body = cb.closest('section').querySelector('.h-body');
+      if (body) body.style.display = cb.checked ? '' : 'none';
+    });
+  });
+  qsa('.h-len', root).forEach(function(i){
+    i.addEventListener('input', function(){ HIST.sections[i.dataset.sec].length = i.value; });
+  });
+  qsa('.h-date', root).forEach(function(i){
+    i.addEventListener('input', function(){ HIST.sections[i.dataset.sec].date = i.value; });
+  });
+
+  qsa('.h-cell', root).forEach(function(inp){
+    inp.addEventListener('input', function(){
+      HIST.sections[inp.dataset.sec].rows[Number(inp.dataset.i)][inp.dataset.f] = inp.value;
+    });
+    // Enter on the last row adds another, so a long log is typed without reaching for the
+    // mouse. Focus stays in the same column.
+    inp.addEventListener('keydown', function(e){
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      var sec = inp.dataset.sec, i = Number(inp.dataset.i), f = inp.dataset.f;
+      var rows = HIST.sections[sec].rows;
+      if (i === rows.length - 1){
+        rows.push({time:'', od:'', pitch:'', footage:''});
+        renderHistoricalForm();
+      }
+      var next = document.querySelector('.h-cell[data-sec="'+sec+'"][data-i="'+(i+1)+'"][data-f="'+f+'"]');
+      if (next) next.focus();
+    });
+    inp.addEventListener('paste', histPaste);
+  });
+
+  qsa('.h-add', root).forEach(function(b){
+    b.addEventListener('click', function(){
+      var rows = HIST.sections[b.dataset.sec].rows;
+      for (var i = 0; i < Number(b.dataset.n); i++) rows.push({time:'', od:'', pitch:'', footage:''});
+      renderHistoricalForm();
+    });
+  });
+  qsa('.h-del', root).forEach(function(b){
+    b.addEventListener('click', function(){
+      var rows = HIST.sections[b.dataset.sec].rows;
+      rows.splice(Number(b.dataset.i), 1);
+      if (!rows.length) rows.push({time:'', od:'', pitch:'', footage:''});
+      renderHistoricalForm();
+    });
+  });
+
+  E('hCancel').addEventListener('click', function(){
+    if (histHasContent() && !confirm('Discard what you have typed?')) return;
+    HIST = null;
+    loadReportIndex();
+  });
+  E('hSave').addEventListener('click', saveHistorical);
+}
+
+/* A block pasted from a spreadsheet fills down from the cell you paste into, rather than
+ * dumping the whole thing into one box. Columns map left-to-right from wherever you
+ * started, so pasting into the OD column fills OD, then pitch, then footage. */
+function histPaste(e){
+  var text = (e.clipboardData || window.clipboardData).getData('text');
+  if (!text || !/[\t\n]/.test(text)) return;   // a single value pastes normally
+  e.preventDefault();
+
+  var inp = e.target;
+  var sec = inp.dataset.sec, startRow = Number(inp.dataset.i);
+  var order = (sec === 'Braidline') ? ['time','od','pitch','footage'] : ['time','od','footage'];
+  var startCol = order.indexOf(inp.dataset.f);
+
+  var lines = text.replace(/\r/g,'').split('\n').filter(function(l){ return l.trim() !== ''; });
+  var rows = HIST.sections[sec].rows;
+
+  lines.forEach(function(line, n){
+    var cells = line.split('\t');
+    var ri = startRow + n;
+    while (rows.length <= ri) rows.push({time:'', od:'', pitch:'', footage:''});
+    cells.forEach(function(cell, c){
+      var field = order[startCol + c];
+      if (field) rows[ri][field] = cell.trim();
+    });
+  });
+  renderHistoricalForm();
+  toast(lines.length + ' row' + (lines.length===1?'':'s') + ' pasted');
+}
+
+function histHasContent(){
+  if (!HIST) return false;
+  if (HIST.pipeCode || HIST.wo.code) return true;
+  return HIST_SECTIONS.some(function(sec){
+    return HIST.sections[sec].rows.some(function(r){ return r.od || r.pitch || r.footage || r.time; });
+  });
+}
+
+/* Combine the section's date with a row's optional time. A paper log usually gives a time
+ * of day against a date written once at the top of the sheet. */
+function histTimestamp(dateStr, timeStr){
+  if (!dateStr) return null;
+  var t = (timeStr || '').trim();
+  if (!/^\d{1,2}:\d{2}$/.test(t)) t = '00:00';
+  var parts = dateStr.split('-').map(Number);
+  var hm = t.split(':').map(Number);
+  var d = new Date(parts[0], parts[1]-1, parts[2], hm[0], hm[1]);
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function saveHistorical(){
+  var btn = E('hSave');
+  if (!HIST.wo.code.trim()){ toast('Work order code is required', true); return; }
+  if (!HIST.pipeCode.trim()){ toast('Reel code is required', true); return; }
+
+  var sections = [], problems = [];
+  HIST_SECTIONS.forEach(function(sec){
+    var s = HIST.sections[sec];
+    if (!s.use) return;
+    var readings = s.rows.filter(function(r){ return r.od !== '' || r.pitch !== ''; })
+      .map(function(r){
+        return {ts: histTimestamp(s.date, r.time), od: r.od, pitch: r.pitch, footage: r.footage};
+      });
+    // A reading with no date can't be placed in time at all, and silently filing it under
+    // "now" would put a 2025 measurement on today's chart.
+    if (!s.date && readings.length) problems.push(sec + ' has readings but no date');
+    if (!s.date && !s.length) return;   // nothing recorded for this section
+    sections.push({
+      section: sec,
+      actualLength: s.length,
+      startedAt:   s.date ? histTimestamp(s.date, '00:00') : null,
+      completedAt: s.date ? histTimestamp(s.date, '23:59') : null,
+      operator: HIST.operator,
+      readings: readings
+    });
+  });
+
+  if (problems.length){ toast(problems[0], true); return; }
+  if (!sections.length){ toast('Fill in at least one section', true); return; }
+
+  var spec = {};
+  Object.keys(HIST.spec).forEach(function(k){ if (HIST.spec[k] !== '') spec[k] = HIST.spec[k]; });
+
+  btn.disabled = true;
+  var label = btn.textContent;
+  btn.textContent = 'Saving…';
+  apiPost('importHistorical', {
+    workOrder: {code: HIST.wo.code.trim(), customer: HIST.wo.customer, productCode: HIST.wo.productCode,
+                pipeSize: HIST.wo.pipeSize, projectLength: HIST.wo.projectLength, spec: spec},
+    pipeCode: HIST.pipeCode.trim(),
+    sections: sections
+  }).then(function(res){
+    toast('Saved ' + res.pipeCode + ' — ' + res.readings + ' reading' + (res.readings===1?'':'s'));
+    // Keep the work order and targets so the next reel of the same job is quick to type;
+    // clear only what belongs to this one reel.
+    var keep = HIST;
+    HIST = histBlank();
+    HIST.wo = keep.wo; HIST.spec = keep.spec; HIST.operator = keep.operator;
+    renderHistoricalForm();
+  }).catch(function(err){
+    toast(err.message, true);
+    btn.disabled = false; btn.textContent = label;
+  });
+}
 
 function rpShortTime(iso){
   if (!iso) return '—';
@@ -4494,6 +4831,9 @@ function rpSectionSummaryHtml(data, sec){
  * floor exactly what's being measured just teaches whoever's cutting corners what to avoid. */
 function rpTimeSourceCell(r){
   if (!r.TimeSource) return '<span class="muted">—</span>'; // logged before this was tracked
+  // Transcribed from a paper log. Not a warning — it's a deliberate, controller-only
+  // record — but it must not read as "device", which would assert the app stamped it.
+  if (r.TimeSource === 'Historical') return '<span class="muted" title="Typed up from the paper production log">from paper log</span>';
   if (r.TimeSource !== 'Manual') return '<span class="muted">device</span>';
   var off = Number(r.TimeOffsetMin);
   var detail = '';
@@ -4704,6 +5044,25 @@ function rpProblemCardHtml(p){
   '</div>';
 }
 
+/* Stats and a trend chart for one measurement type. Written once so pitch is presented
+ * exactly like OD rather than as a lesser, differently-shaped afterthought. */
+function rpMeasureBlockHtml(series, label, tt, problems){
+  if (!series.length) return '';
+  var vals = series.map(function(r){ return Number(r.Value); });
+  var real = vals.filter(function(v){ return !isLikelyTypo(v, tt); });
+  var typos = vals.length - real.length;
+  if (!real.length) real = vals;
+
+  return '<h3 style="margin-top:16px">'+esc(label)+'</h3>' +
+    '<div class="kpis"><div class="kpi"><b>'+esc(label)+' readings</b><span>'+series.length+'</span>' +
+      (typos ? '<i class="suspect">'+typos+' look like typos</i>' : '') + '</div>' +
+    '<div class="kpi"><b>Min</b><span>'+Math.min.apply(null,real)+'"</span></div>' +
+    '<div class="kpi"><b>Max</b><span>'+Math.max.apply(null,real)+'"</span></div>' +
+    '<div class="kpi"><b>Avg</b><span>'+round4(real.reduce(function(a,b){return a+b;},0)/real.length)+'"</span></div></div>' +
+    (tt ? '<div class="muted" style="font-size:10.5px;margin:6px 0">Shaded band = target '+tt.target+'" &plusmn; '+tt.tol+'"</div>' : '') +
+    odChartSvg(series, tt, problems || []);
+}
+
 function rpSectionDetailHtml(data, sec){
   var wo = data.workOrder;
   var prefix = sec==='Baseline'?'BL':sec==='Braidline'?'BR':'CV';
@@ -4725,6 +5084,22 @@ function rpSectionDetailHtml(data, sec){
   var typoCount = vals.length - realVals.length;
   if (!realVals.length) realVals = vals;
 
+  /* Pitch gets the same treatment as OD on the braidline.
+   *
+   * It was already being measured and saved — entered in the same form, one row each —
+   * but only OD was charted or summarised, so the pitch numbers went in and were never
+   * looked at again. On a braider pitch is the measurement that tells you the braid angle
+   * is drifting, which is exactly what a trend line is for. */
+  var pitchBlock = '';
+  if (sec === 'Braidline'){
+    var pSeries = data.readings.filter(function(r){ return r.Section===sec && r.Type==='Pitch' && !isVoid(r); })
+      .sort(function(a,b){ return new Date(a.Timestamp)-new Date(b.Timestamp); });
+    pitchBlock = rpMeasureBlockHtml(pSeries, 'Pitch',
+      (wo.BR_TargetPitch!=='' && wo.BR_TargetPitch!==undefined && wo.BR_PitchTol!=='' && wo.BR_PitchTol!==undefined)
+        ? {target:Number(wo.BR_TargetPitch), tol:Number(wo.BR_PitchTol)} : null,
+      chartProblems);
+  }
+
   var odBlock = series.length
     ? '<div class="kpis"><div class="kpi"><b>OD readings</b><span>'+series.length+'</span>' +
         (typoCount ? '<i class="suspect">'+typoCount+' look like typos</i>' : '') + '</div>' +
@@ -4742,6 +5117,7 @@ function rpSectionDetailHtml(data, sec){
   return '<section class="card rp-sec">' +
     '<h2>'+sec+' &mdash; measurements</h2>' +
     odBlock +
+    pitchBlock +
     '<h3 style="margin-top:14px">All readings</h3>' + rpReadingsTableHtml(data.readings, sec, wo) +
     (sec !== 'Braidline'
       ? '<h3 style="margin-top:14px">Wall thickness ('+pointCount(sec)+'-point)</h3>' +
@@ -4797,7 +5173,7 @@ function renderReport(){
     '<h2 style="margin:16px 0 8px">Measurements</h2>' +
     ['Baseline','Braidline','Coverline'].map(function(s){ return rpSectionDetailHtml(data, s); }).join('') +
 
-    '<p class="muted no-print" style="font-size:10px;text-align:center">Live &mdash; refreshes every 20 seconds. Last updated '+
+    '<p class="muted no-print" style="font-size:10px;text-align:center">Live &mdash; updates as readings are logged. Last updated '+
       esc(STATE.rpLoadedAt ? STATE.rpLoadedAt.toLocaleTimeString() : '')+'</p>';
 
   E('rpBackBtn').addEventListener('click', loadReportIndex);
