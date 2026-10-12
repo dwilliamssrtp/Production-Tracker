@@ -705,6 +705,11 @@ function supaRoute(action, a){
       p_liner_rpm: supaNum(a.linerRpm), p_line_speed: supaNum(a.lineSpeed),
       p_melt_temp: supaNum(a.meltTemp), p_notes: a.notes || ''}];
 
+    case 'archivePipe':       return ['api_archive_pipe',        {p_token: t, p_pipe_code: a.pipeCode}];
+    case 'unarchivePipe':     return ['api_unarchive_pipe',      {p_token: t, p_pipe_code: a.pipeCode}];
+    case 'pipeDeletePreview': return ['api_pipe_delete_preview', {p_token: t, p_pipe_code: a.pipeCode}];
+    case 'deletePipe':        return ['api_delete_pipe',         {p_token: t, p_pipe_code: a.pipeCode, p_confirm_code: a.confirmCode}];
+
     case 'importHistorical': return ['api_import_historical', {
       p_token: t, p_wo: a.workOrder, p_pipe_code: a.pipeCode, p_sections: a.sections}];
 
@@ -4426,18 +4431,39 @@ function renderReportIndex(){
   if (!root) return;
   var d = STATE.rpIndex || {active: [], recentComplete: []};
 
+  /* Reels are managed from here as well as read.
+   *
+   * Archiving is per reel, not only per work order: a job usually has one scrapped or
+   * mistyped reel long before the work order itself is finished. Archived reels drop off
+   * the dashboard and the TV but stay listed here, greyed, so they can be put back or
+   * deleted — and a reel must be archived before it can be deleted, which the database
+   * enforces rather than the screen. */
   function groupBlock(g){
-    return '<div style="margin-bottom:12px">' +
+    var live = g.pipes.filter(function(p){ return !p.archived; });
+    var put  = g.pipes.filter(function(p){ return  p.archived; });
+
+    function row(p){
+      return '<tr'+(p.archived ? ' class="voided"' : '')+'><td class="l">'+esc(p.pipeCode)+
+          (p.archived ? ' <span class="muted" style="font-size:9px">archived</span>' : '')+'</td>' +
+        '<td>'+pillHtml(p.blStatus)+'</td><td>'+pillHtml(p.brStatus)+'</td><td>'+pillHtml(p.cvStatus)+'</td>' +
+        '<td class="muted">'+esc(fmtRel(p.lastUpdated))+'</td>' +
+        '<td class="l"><button class="btn sm pri" data-report="'+esc(p.pipeCode)+'">Open report</button> ' +
+          (p.archived
+            ? '<button class="btn sm" data-unarchive="'+esc(p.pipeCode)+'">Restore</button> ' +
+              '<button class="btn sm danger" data-delpipe="'+esc(p.pipeCode)+'">Delete</button>'
+            : '<button class="btn sm" data-archive="'+esc(p.pipeCode)+'">Archive</button>') +
+        '</td></tr>';
+    }
+
+    return '<div style="margin-bottom:14px">' +
       '<div class="row" style="gap:6px"><b>'+esc(g.workOrderCode)+'</b>' +
-        '<span class="muted">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</span></div>' +
+        '<span class="muted">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</span>' +
+        '<span class="spacer"></span>' +
+        '<button class="btn sm" data-addreel="'+esc(g.workOrderCode)+'">+ Add reel</button></div>' +
       '<table style="margin-top:4px"><thead><tr><th class="l">Reel</th><th>Baseline</th><th>Braidline</th>' +
-        '<th>Coverline</th><th>Last activity</th><th>&nbsp;</th></tr></thead><tbody>' +
-      g.pipes.map(function(p){
-        return '<tr><td class="l">'+esc(p.pipeCode)+'</td>' +
-          '<td>'+pillHtml(p.blStatus)+'</td><td>'+pillHtml(p.brStatus)+'</td><td>'+pillHtml(p.cvStatus)+'</td>' +
-          '<td class="muted">'+esc(fmtRel(p.lastUpdated))+'</td>' +
-          '<td><button class="btn sm pri" data-report="'+esc(p.pipeCode)+'">Open report</button></td></tr>';
-      }).join('') + '</tbody></table></div>';
+        '<th>Coverline</th><th>Last activity</th><th class="l">&nbsp;</th></tr></thead><tbody>' +
+      live.map(row).join('') + put.map(row).join('') +
+      '</tbody></table></div>';
   }
 
   root.innerHTML =
@@ -4455,7 +4481,87 @@ function renderReportIndex(){
   qsa('[data-report]', root).forEach(function(b){
     b.addEventListener('click', function(){ loadReport(b.dataset.report); });
   });
-  E('rpHistBtn').addEventListener('click', renderHistoricalForm);
+  E('rpHistBtn').addEventListener('click', function(){ renderHistoricalForm(); });
+
+  qsa('[data-archive]', root).forEach(function(b){
+    b.addEventListener('click', function(){
+      if (!confirm('Archive reel ' + b.dataset.archive + '?\n\nIt comes off the dashboard and the TV board but keeps all its data, and you can restore it here.')) return;
+      b.disabled = true;
+      apiPost('archivePipe', {pipeCode: b.dataset.archive})
+        .then(function(){ toast(b.dataset.archive + ' archived'); loadReportIndex(); })
+        .catch(function(err){ toast(err.message, true); b.disabled = false; });
+    });
+  });
+  qsa('[data-unarchive]', root).forEach(function(b){
+    b.addEventListener('click', function(){
+      b.disabled = true;
+      apiPost('unarchivePipe', {pipeCode: b.dataset.unarchive})
+        .then(function(){ toast(b.dataset.unarchive + ' restored'); loadReportIndex(); })
+        .catch(function(err){ toast(err.message, true); b.disabled = false; });
+    });
+  });
+  qsa('[data-delpipe]', root).forEach(function(b){
+    b.addEventListener('click', function(){ deleteReelFlow(b.dataset.delpipe); });
+  });
+
+  qsa('[data-addreel]', root).forEach(function(b){
+    b.addEventListener('click', function(){ addReelToWorkOrder(b.dataset.addreel); });
+  });
+}
+
+/* Adding a reel means two different things depending on the work order.
+ *
+ * A live job gets the normal add-reel screen, which prints a tag to take to the floor. A
+ * historical one has no floor and no tag — it wants the paper-entry form with the work
+ * order already filled in. Sending a historical job to the live flow would create an
+ * empty reel that could never be logged against. */
+function addReelToWorkOrder(code){
+  apiGet('getWorkOrderInfo', {code: code}).then(function(info){
+    var wo = info.workOrder || info;
+    if (wo && String(wo.Historical) === 'true'){
+      HIST = histBlank();
+      HIST.wo = {code: wo.Code, customer: wo.Customer || '', productCode: wo.ProductCode || '',
+                 pipeSize: wo.PipeSize || '', projectLength: wo.ProjectLength || ''};
+      ['BL_TargetOD','BL_ODTol','BR_TargetOD','BR_ODTol','BR_TargetPitch','BR_PitchTol','CV_TargetOD','CV_ODTol']
+        .forEach(function(k){ if (wo[k] !== undefined && wo[k] !== '') HIST.spec[k] = wo[k]; });
+      renderHistoricalForm();
+      toast('Add the next reel for ' + code);
+    } else {
+      go('addPipe', {workOrderCode: code});
+    }
+  }).catch(function(err){ toast(err.message, true); });
+}
+
+/* Delete is two steps on purpose: the database refuses to delete a reel that hasn't been
+ * archived, so the screen offers to do that first rather than reporting a dead end. */
+function deleteReelFlow(pipeCode){
+  apiGet('pipeDeletePreview', {pipeCode: pipeCode}).then(function(p){
+    var counts = [
+      p.readings + ' reading' + (p.readings === 1 ? '' : 's'),
+      p.thicknessChecks + ' thickness check' + (p.thicknessChecks === 1 ? '' : 's'),
+      p.extruderRuns + ' extruder entr' + (p.extruderRuns === 1 ? 'y' : 'ies'),
+      p.materialUsage + ' material load' + (p.materialUsage === 1 ? '' : 's'),
+      p.notes + ' note' + (p.notes === 1 ? '' : 's'),
+      p.problemReports + ' problem report' + (p.problemReports === 1 ? '' : 's')
+    ].join('\n  ');
+
+    var msg = 'Permanently delete reel ' + pipeCode + '?\n\nThis destroys:\n  ' + counts + '\n\n' +
+      (p.photos ? p.photos + ' photo' + (p.photos === 1 ? '' : 's') +
+        ' will lose their record here, but the image files stay in Supabase Storage and must be removed there.\n\n' : '') +
+      'This cannot be undone. Type the reel code to confirm.';
+
+    var typed = prompt(msg, '');
+    if (typed === null) return;
+    if (typed.trim() !== pipeCode){ toast('That did not match — nothing was deleted', true); return; }
+
+    apiPost('deletePipe', {pipeCode: pipeCode, confirmCode: typed.trim()})
+      .then(function(res){
+        toast('Deleted ' + pipeCode + ' and ' + res.deleted.readings + ' reading' +
+              (res.deleted.readings === 1 ? '' : 's'));
+        loadReportIndex();
+      })
+      .catch(function(err){ toast(err.message, true); });
+  }).catch(function(err){ toast(err.message, true); });
 }
 
 /* ===================== HISTORICAL ENTRY (controller only) =====================
