@@ -409,7 +409,7 @@
  * this line — so changing the default does NOT move a device that was pointed at Supabase
  * (or Apps Script) by hand. Clear the Settings field to fall back to this.
  */
-var DEFAULT_API_URL = 'https://rkcdylfubmupzhdcgdga.supabase.co/rest/v1/';
+var DEFAULT_API_URL = 'https://mkgbaprutwznmvegpqak.supabase.co/rest/v1/';
 
 // Kept for the fallback path and so the Settings field can be filled in from memory.
 var APPS_SCRIPT_API_URL = 'https://script.google.com/macros/s/AKfycbz2HsHOh07yVRD6WJoDIPfHlWxysj4Scwr42g1WTgmshCs8r_qr1raS7o5i-cgTZG_-Jg/exec';
@@ -423,6 +423,29 @@ function lsSet(key, val){ try { localStorage.setItem(key, val); } catch (e) { /*
 function lsDel(key){ try { localStorage.removeItem(key); } catch (e) { /* nothing to do */ } }
 
 var API_URL = lsGet('srtp_api_url') || DEFAULT_API_URL;
+
+/* One-time move onto the shared Supabase project (2026-10-28). The tracker used to have
+   a project of its own; it now lives alongside the pricing tool so there is one backend
+   and one project that never idles into a pause.
+
+   This block exists because localStorage WINS over DEFAULT_API_URL: every device that has
+   opened the tracker before has the old project saved in srtp_api_url, so changing the
+   default alone would leave the floor split - old devices still writing to the retired
+   project, new ones to the live one, and nobody able to see both. Rewriting the saved
+   value is what actually moves a device.
+
+   The session goes too: a token is only valid in the project that issued it, so keeping
+   it would just produce a confusing "not signed in" on the first action. Dropping it
+   means one clean sign-in instead. Harmless once every device has been through it. */
+(function moveToSharedProject(){
+  var OLD = 'rkcdylfubmupzhdcgdga', NEW = 'mkgbaprutwznmvegpqak';
+  var saved = lsGet('srtp_api_url');
+  if (!saved || saved.indexOf(OLD) === -1) return;   // untouched, or pointed somewhere else by hand
+  var moved = saved.split(OLD).join(NEW);
+  lsSet('srtp_api_url', moved);
+  API_URL = moved;
+  lsDel('srtp_token'); lsDel('srtp_account');
+})();
 
 var BASELINE_POINTS = 16;
 var COVERLINE_POINTS = 12;
@@ -602,8 +625,8 @@ var LAST_ENVELOPE = null;
  * functions, each of which checks the session token and role first. It is not the
  * service_role key, which bypasses everything and must never leave the dashboard.
  */
-var SUPABASE_URL = 'https://rkcdylfubmupzhdcgdga.supabase.co';
-var SUPABASE_KEY = 'sb_publishable_kpZprInacerY8I4pab_c6Q_snkMD7OH';
+var SUPABASE_URL = 'https://mkgbaprutwznmvegpqak.supabase.co';
+var SUPABASE_KEY = 'sb_publishable_rQcUUEceJWPGw2mX0QE_0w_R6fbt8FG';
 
 function isSupabaseBackend(){ return /supabase\.co/i.test(API_URL || ''); }
 
