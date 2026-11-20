@@ -161,3 +161,55 @@ select
   (select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace
     where n.nspname='public' and p.proname like '\_%'
       and has_function_privilege('anon', p.oid,'execute'))                       as helpers_anon_can_call;
+
+-- ---------------------------------------------------------------------------
+-- Renaming a work order (added 2026-11-20)
+-- ---------------------------------------------------------------------------
+-- The code is the work order's identity and pipes reference it, so renaming was
+-- impossible: pipes.work_order_code pointed at it with ON UPDATE NO ACTION and any
+-- change failed on the foreign key. Cascading the update makes the rename atomic —
+-- every reel follows in the same statement, with no window where a reel points at a
+-- work order that doesn't exist.
+--
+-- Reel codes are independent of the work order code, so printed QR tags keep working:
+-- a tag carries the reel code. The UI says so, because that is the obvious worry.
+alter table pipes drop constraint if exists pipes_work_order_code_fkey;
+alter table pipes add constraint pipes_work_order_code_fkey
+  foreign key (work_order_code) references work_orders(code)
+  on delete cascade on update cascade;
+
+create or replace function api_rename_work_order(p_token text, p_code text, p_new_code text)
+returns jsonb
+language plpgsql volatile security definer set search_path = public, extensions
+as $$
+declare
+  old_code text := trim(coalesce(p_code, ''));
+  new_code text := trim(coalesce(p_new_code, ''));
+  n_pipes  int;
+begin
+  perform _require(p_token, array['Admin']);
+  if new_code = '' then raise exception 'The new code cannot be blank'; end if;
+  if not exists (select 1 from work_orders where code = old_code) then
+    raise exception 'Work order not found: %', old_code;
+  end if;
+  if new_code = old_code then raise exception 'That is already the code'; end if;
+  -- Case-insensitive: two work orders differing only in case would read as the same job
+  -- on a printed sheet.
+  if exists (select 1 from work_orders where lower(code) = lower(new_code) and code <> old_code) then
+    raise exception 'A work order called "%" already exists', new_code;
+  end if;
+
+  select count(*) into n_pipes from pipes where work_order_code = old_code;
+  update work_orders set code = new_code where code = old_code;   -- reels cascade
+
+  return jsonb_build_object('from', old_code, 'to', new_code, 'reels', n_pipes);
+end;
+$$;
+
+grant execute on function api_rename_work_order(text,text,text) to anon, authenticated;
+
+-- Expect cascade on both, and no orphaned reels.
+select (select pg_get_constraintdef(oid) from pg_constraint
+         where conname='pipes_work_order_code_fkey')                      as fk_definition,
+       (select count(*) from pipes
+         where work_order_code not in (select code from work_orders))     as orphaned_reels;

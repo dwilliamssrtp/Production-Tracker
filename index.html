@@ -748,6 +748,7 @@ function supaRoute(action, a){
     case 'resetPipe': return ['api_reset_pipe', {
       p_token: t, p_pipe_code: a.pipeCode, p_confirm: a.confirm, p_include_log: !!a.includeLog}];
 
+    case 'renameWorkOrder':    return ['api_rename_work_order',    {p_token: t, p_code: a.code, p_new_code: a.newCode}];
     case 'archiveWorkOrder':   return ['api_archive_work_order',   {p_token: t, p_code: a.code}];
     case 'unarchiveWorkOrder': return ['api_unarchive_work_order', {p_token: t, p_code: a.code}];
     case 'deleteWorkOrder':    return ['api_delete_work_order',    {p_token: t, p_code: a.code, p_confirm_code: a.confirmCode}];
@@ -3818,6 +3819,7 @@ function workOrderGroupHtml(g){
     '<table style="margin-top:6px"><thead><tr><th class="l">Reel</th><th>Baseline</th><th>Braidline</th><th>Coverline</th><th class="l">Last reading</th></tr></thead><tbody>' + pipeRows + '</tbody></table>' +
     '<div class="row" style="margin-top:8px"><button class="btn sm" data-addpipe="'+esc(g.workOrderCode)+'">+ Add reel to this work order</button>' +
       '<span class="spacer"></span>' +
+      '<button class="btn sm" data-renamewo="'+esc(g.workOrderCode)+'" data-reels="'+g.pipes.length+'">Rename</button>' +
       '<button class="btn sm" data-archivewo="'+esc(g.workOrderCode)+'" data-active="'+g.activePipes.length+'">Archive</button></div>' +
   '</section>';
 }
@@ -3830,6 +3832,40 @@ function archiveWorkOrder(code, activePipes, onDone){
       'Archiving takes it off the dashboard and the Timers page. Nothing is deleted and you can restore it from the Archive at any time.\n\nArchive it anyway?')) return;
   apiPost('archiveWorkOrder', {code: code})
     .then(function(){ toast(code + ' archived'); if (onDone) onDone(); })
+    .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
+}
+
+/* Rename a work order.
+ *
+ * The code is the work order's identity — pipes reference it — so this was impossible
+ * until the foreign key gained ON UPDATE CASCADE. With it, the rename is one statement
+ * and every reel follows atomically; there is no moment where a reel points at a work
+ * order that doesn't exist.
+ *
+ * Reel codes are independent, so printed QR tags keep working: a tag carries the reel
+ * code, not the work order's. Worth saying out loud in the prompt, because "will this
+ * invalidate the tags I've already printed?" is the obvious worry. */
+function renameWorkOrder(code, reels, onDone){
+  var next = prompt(
+    'Rename work order ' + code + '\n\n' +
+    reels + ' reel' + (reels === 1 ? '' : 's') + ' will move with it, keeping all readings. ' +
+    'Printed reel tags are unaffected — they carry the reel code, not this one.\n\n' +
+    'New code:', code);
+  if (next === null) return;
+  next = next.trim();
+  if (!next || next === code) return;
+
+  apiPost('renameWorkOrder', {code: code, newCode: next})
+    .then(function(res){
+      toast('Renamed ' + res.from + ' to ' + res.to +
+            (res.reels ? ' — ' + res.reels + ' reel' + (res.reels === 1 ? '' : 's') + ' moved' : ''));
+      // Anything still holding the old code would silently 404 on its next fetch.
+      if (STATE.workOrderCode === code) STATE.workOrderCode = res.to;
+      if (STATE.pdData && STATE.pdData.pipe && STATE.pdData.pipe.WorkOrderCode === code){
+        STATE.pdData.pipe.WorkOrderCode = res.to;
+      }
+      if (onDone) onDone();
+    })
     .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
 }
 
@@ -3863,6 +3899,12 @@ function renderDashboard(d){
     b.addEventListener('click', function(ev){
       ev.stopPropagation();
       archiveWorkOrder(b.dataset.archivewo, Number(b.dataset.active||0), loadDashboard);
+    });
+  });
+  qsa('[data-renamewo]', root).forEach(function(b){
+    b.addEventListener('click', function(ev){
+      ev.stopPropagation();
+      renameWorkOrder(b.dataset.renamewo, Number(b.dataset.reels||0), loadDashboard);
     });
   });
   qsa('[data-wodash]', root).forEach(function(h){
