@@ -728,6 +728,13 @@ function supaRoute(action, a){
       p_liner_rpm: supaNum(a.linerRpm), p_line_speed: supaNum(a.lineSpeed),
       p_melt_temp: supaNum(a.meltTemp), p_notes: a.notes || ''}];
 
+    case 'listRecipes':  return ['api_list_recipes',  {p_token: t}];
+    case 'saveRecipe':   return ['api_save_recipe',   {
+      p_token: t, p_id: a.id || null, p_name: a.name, p_product_code: a.productCode || '',
+      p_pipe_size: a.pipeSize || '', p_customer: a.customer || '', p_notes: a.notes || '',
+      p_spec: a.spec || {}}];
+    case 'deleteRecipe': return ['api_delete_recipe', {p_token: t, p_id: a.id}];
+
     case 'archivePipe':       return ['api_archive_pipe',        {p_token: t, p_pipe_code: a.pipeCode}];
     case 'unarchivePipe':     return ['api_unarchive_pipe',      {p_token: t, p_pipe_code: a.pipeCode}];
     case 'pipeDeletePreview': return ['api_pipe_delete_preview', {p_token: t, p_pipe_code: a.pipeCode}];
@@ -2131,6 +2138,10 @@ function viewController(isNew){
     '<p class="muted" style="margin:8px 0 0">This work order can hold several reels — since a single reel may not fit the full project length in one run. Set targets once here; each reel tracks its own progress and actual length.</p>' +
   '</section>' +
 
+  // Before the reference sections, because pulling a saved recipe is the first thing you
+  // want to do on a repeat job — not something to discover after typing it all again.
+  recipeBarHtml() +
+
   '<section class="card"><h2>Baseline — reference targets</h2>' +
     '<div class="grid g4">' +
       '<div class="fld"><label>Target OD (in)</label><input id="f_blTargetOD" type="number" step="0.001" value="'+v('BL_TargetOD')+'"></div>' +
@@ -2229,7 +2240,174 @@ function collectControllerForm(isNew){
   return body;
 }
 
+/* ===================== SAVED RECIPES =====================
+ *
+ * A work order carries ~78 reference fields across Baseline, Braidline and Coverline.
+ * Most jobs are a repeat of a pipe already run, or a near-twin of one, so typing them in
+ * again is both slow and the easiest place in the app to introduce a quiet error.
+ *
+ * A recipe is just a work order's `spec` object saved under a name. Storing the whole bag
+ * rather than a chosen list of fields means a recipe cannot fall behind the form: add a
+ * field to the work order and recipes carry it from then on with no change here.
+ */
+
+/* Form field name -> spec key. Mirrors supaSpec() exactly, including its one irregular
+ * case, because a mismatch would silently drop a field on load rather than fail. */
+function fieldToSpecKey(k){
+  if (k === 'brLongsEndsUp') return 'BR_Longs';
+  var m = /^(bl|br|cv)([A-Z].*)$/.exec(k);
+  return m ? (m[1].toUpperCase() + '_' + m[2]) : null;
+}
+
+/* The recipe fields of whatever the form currently holds.
+ *
+ * Driven off collectControllerForm so the set is always exactly the form's own — there is
+ * no second list to keep in step. Work-order identity (code, customer, length, email) is
+ * deliberately NOT part of a recipe: those belong to the job, not the pipe design. */
+function recipeSpecFromForm(){
+  var body = collectControllerForm(false), spec = {};
+  Object.keys(body).forEach(function(k){
+    var sk = fieldToSpecKey(k);
+    if (sk) spec[sk] = body[k];
+  });
+  return spec;
+}
+
+function applyRecipeToForm(spec){
+  var body = collectControllerForm(false), applied = 0, missing = [];
+  Object.keys(body).forEach(function(k){
+    var sk = fieldToSpecKey(k);
+    if (!sk) return;
+    var el = E('f_' + k);
+    if (!el) return;
+    if (spec[sk] === undefined || spec[sk] === null) return;
+    el.value = spec[sk];
+    applied++;
+  });
+  // A recipe saved by an older build can hold keys this form no longer has. Say so rather
+  // than loading most of it and leaving the operator to notice the gap on the floor.
+  Object.keys(spec).forEach(function(sk){
+    var hit = Object.keys(body).some(function(k){ return fieldToSpecKey(k) === sk; });
+    if (!hit && spec[sk] !== '') missing.push(sk);
+  });
+  return {applied: applied, missing: missing};
+}
+
+function recipeBarHtml(){
+  return '<section class="card no-print" id="recipeBar">' +
+    '<h2>Saved recipes</h2>' +
+    '<p class="muted" style="margin-top:0">Pull the Baseline, Braidline and Coverline references ' +
+      'from a pipe you have run before, then edit whatever differs. Loading replaces the reference ' +
+      'fields only &mdash; the work order code, customer and project length are left alone.</p>' +
+    '<div class="row">' +
+      '<div class="fld" style="flex:1;min-width:200px"><label>Recipe</label>' +
+        '<select id="rcPick"><option value="">Loading&hellip;</option></select></div>' +
+      '<button class="btn sm pri" id="rcLoad" style="align-self:flex-end">Load into this form</button>' +
+      '<span class="spacer"></span>' +
+      '<button class="btn sm" id="rcSaveAs" style="align-self:flex-end">Save current as new&hellip;</button>' +
+      '<button class="btn sm" id="rcUpdate" style="align-self:flex-end">Save over selected</button>' +
+      '<button class="btn sm danger" id="rcDelete" style="align-self:flex-end">Delete</button>' +
+    '</div>' +
+    '<p class="muted" id="rcInfo" style="font-size:10.5px;margin:8px 0 0"></p>' +
+  '</section>';
+}
+
+var RECIPES = [];
+
+function bindRecipeBar(){
+  var pick = E('rcPick');
+  if (!pick) return;
+
+  function info(msg){ var el = E('rcInfo'); if (el) el.innerHTML = msg || ''; }
+  function selected(){ return RECIPES.filter(function(r){ return r.id === pick.value; })[0] || null; }
+
+  function describe(){
+    var r = selected();
+    if (!r){ info('No recipe selected.'); return; }
+    info('<b>' + esc(r.name) + '</b> &middot; ' + r.fieldCount + ' fields' +
+      (r.productCode ? ' &middot; ' + esc(r.productCode) : '') +
+      (r.pipeSize ? ' &middot; ' + esc(r.pipeSize) : '') +
+      (r.updatedBy ? ' &middot; saved by ' + esc(r.updatedBy) : '') +
+      (r.updatedAt ? ' ' + esc(fmtRel(r.updatedAt)) : '') +
+      (r.notes ? '<br>' + esc(r.notes) : ''));
+  }
+
+  function refresh(selectId){
+    return apiGet('listRecipes', {}).then(function(d){
+      RECIPES = d.recipes || [];
+      pick.innerHTML = '<option value="">' +
+        (RECIPES.length ? '— pick a saved recipe —' : 'none saved yet') + '</option>' +
+        RECIPES.map(function(r){
+          return '<option value="'+esc(r.id)+'"'+(r.id===selectId?' selected':'')+'>' +
+            esc(r.name) + (r.productCode ? ' — '+esc(r.productCode) : '') + '</option>';
+        }).join('');
+      describe();
+    }).catch(function(err){
+      pick.innerHTML = '<option value="">could not load</option>';
+      info('<span class="flag">'+esc(err.message)+'</span>');
+    });
+  }
+
+  pick.addEventListener('change', describe);
+
+  E('rcLoad').addEventListener('click', function(){
+    var r = selected();
+    if (!r){ toast('Pick a recipe first', true); return; }
+    if (!confirm('Load "' + r.name + '" into this form?\n\nIt overwrites the Baseline, Braidline and Coverline reference fields. The work order code, customer and project length are untouched.')) return;
+    var res = applyRecipeToForm(r.spec || {});
+    toast('Loaded ' + r.name + ' — ' + res.applied + ' fields');
+    if (res.missing.length){
+      info('<span class="flag">&#9888; ' + res.missing.length + ' field' +
+        (res.missing.length===1?'':'s') + ' in this recipe no longer exist on the form and were skipped: ' +
+        esc(res.missing.join(', ')) + '</span>');
+    } else {
+      describe();
+    }
+  });
+
+  E('rcSaveAs').addEventListener('click', function(){
+    var suggested = (E('f_productCode').value || '').trim();
+    var name = prompt('Save these references as a recipe.\n\nName it something you will recognise — the product code is a good choice.', suggested);
+    if (name === null) return;
+    if (!name.trim()){ toast('Give the recipe a name', true); return; }
+    var notes = prompt('Note (optional) — anything worth knowing about this recipe:', '') || '';
+    saveRecipe(null, name.trim(), notes, refresh);
+  });
+
+  E('rcUpdate').addEventListener('click', function(){
+    var r = selected();
+    if (!r){ toast('Pick the recipe to save over', true); return; }
+    if (!confirm('Overwrite "' + r.name + '" with what is on this form?')) return;
+    saveRecipe(r.id, r.name, r.notes || '', refresh);
+  });
+
+  E('rcDelete').addEventListener('click', function(){
+    var r = selected();
+    if (!r){ toast('Pick a recipe first', true); return; }
+    if (!confirm('Delete the recipe "' + r.name + '"?\n\nWork orders already created from it keep their settings — the recipe is only a starting point.')) return;
+    apiPost('deleteRecipe', {id: r.id})
+      .then(function(){ toast('Deleted ' + r.name); return refresh(''); })
+      .catch(function(err){ toast(err.message, true); });
+  });
+
+  function saveRecipe(id, name, notes, then){
+    apiPost('saveRecipe', {
+      id: id, name: name, notes: notes,
+      productCode: E('f_productCode').value.trim(),
+      pipeSize: E('f_pipeSize').value.trim(),
+      customer: E('f_customer').value.trim(),
+      spec: recipeSpecFromForm()
+    }).then(function(r){
+      toast('Saved recipe ' + r.name + ' — ' + r.fieldCount + ' fields');
+      then(r.id);
+    }).catch(function(err){ toast(err.message, true); });
+  }
+
+  refresh('');
+}
+
 function bindController(isNew){
+  bindRecipeBar();
   E('cancelBtn').addEventListener('click', function(){ go('home'); });
   E('saveWoBtn').addEventListener('click', function(){
     var body = collectControllerForm(isNew);
