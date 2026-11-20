@@ -103,6 +103,15 @@
   table.hgrid input{padding:4px 6px;font-variant-numeric:tabular-nums;}
   table.hgrid input:focus{outline:2px solid var(--accent);outline-offset:-2px;}
   table.hgrid .h-del{padding:3px 7px;line-height:1;color:var(--mut);}
+
+  /* Dragging reels into order. The handle is a grip, not the whole row, so a drag is
+     deliberate rather than something that happens while trying to click through. */
+  .dragcell{cursor:grab;color:var(--mut);letter-spacing:-2px;user-select:none;}
+  tr.pipeRow.dragging{opacity:.4;}
+  tr.pipeRow.dropinto td{box-shadow:inset 0 2px 0 var(--accent);}
+  tr.pipeRow.dropinto[data-drop-after="1"] td{box-shadow:inset 0 -2px 0 var(--accent);}
+  .pipeTable tbody:empty::after{content:"drop a reel here";display:block;padding:8px;
+    font-size:10px;color:var(--mut);font-style:italic;}
   .grid{display:grid;gap:8px 12px;}
   .g2{grid-template-columns:1fr 1fr;}
   .g3{grid-template-columns:repeat(3,1fr);}
@@ -749,6 +758,7 @@ function supaRoute(action, a){
       p_token: t, p_pipe_code: a.pipeCode, p_confirm: a.confirm, p_include_log: !!a.includeLog}];
 
     case 'renameWorkOrder':    return ['api_rename_work_order',    {p_token: t, p_code: a.code, p_new_code: a.newCode}];
+    case 'setPipeOrder':       return ['api_set_pipe_order',       {p_token: t, p_work_order_code: a.workOrderCode, p_pipe_codes: a.pipeCodes}];
     case 'archiveWorkOrder':   return ['api_archive_work_order',   {p_token: t, p_code: a.code}];
     case 'unarchiveWorkOrder': return ['api_unarchive_work_order', {p_token: t, p_code: a.code}];
     case 'deleteWorkOrder':    return ['api_delete_work_order',    {p_token: t, p_code: a.code, p_confirm_code: a.confirmCode}];
@@ -1924,15 +1934,20 @@ function viewHomeOperator(){
   var params = new URLSearchParams(location.search);
   var urlPipe = params.get('pipe') || '';
   return '' +
+  /* Scanning is the only way in, by design: the reel you are logging to is then always
+   * the reel physically in front of you. A typed code can be the reel next to it, or the
+   * one you had open yesterday, and nothing downstream would catch the difference.
+   *
+   * The code box is gone rather than hidden — there is no field here to type into. */
   '<section class="card">' +
     '<h2>Open a reel</h2>' +
-    '<p class="muted" style="margin-top:0">Scan the QR tag on the reel, or type its code.</p>' +
+    '<p class="muted" style="margin-top:0">Scan the QR tag on the reel you are working on. ' +
+      'That tag is what opens it &mdash; so what you log always belongs to the reel in front of you.</p>' +
     '<div class="row">' +
-      '<div class="fld" style="flex:1;min-width:180px"><label>Reel code</label>' +
-        '<input id="codeInput" placeholder="e.g. BL20260128-R1" value="'+esc(urlPipe)+'"></div>' +
-      '<button class="btn" id="scanBtn" style="align-self:flex-end">Scan QR</button>' +
-      '<button class="btn pri" id="goBtn" style="align-self:flex-end">Go</button>' +
+      '<button class="btn pri" id="scanBtn" style="font-size:13px;padding:12px 18px">Scan reel tag</button>' +
     '</div>' +
+    '<p class="muted" style="font-size:10px;margin:10px 0 0">Tag missing or unreadable? Ask the controller &mdash; ' +
+      'they can open the reel and print a new tag.</p>' +
     '<div id="homeResult" style="margin-top:10px"></div>' +
   '</section>' +
   '<section class="card no-print">' +
@@ -1946,9 +1961,15 @@ function viewHomeOperator(){
 }
 
 function bindHome(){
-  E('scanBtn').addEventListener('click', function(){ startScan(function(code){ E('codeInput').value = code; lookupCode(code); }); });
-  E('goBtn').addEventListener('click', function(){ lookupCode(E('codeInput').value.trim()); });
-  E('codeInput').addEventListener('keydown', function(ev){ if (ev.key==='Enter') lookupCode(E('codeInput').value.trim()); });
+  // The operator's home has no code box at all — scanning is the only way in — so every
+  // one of these is guarded rather than assumed present.
+  E('scanBtn').addEventListener('click', function(){
+    startScan(function(code){ var i = E('codeInput'); if (i) i.value = code; lookupCode(code); });
+  });
+  var goBtn = E('goBtn');
+  if (goBtn) goBtn.addEventListener('click', function(){ lookupCode(E('codeInput').value.trim()); });
+  var codeInput = E('codeInput');
+  if (codeInput) codeInput.addEventListener('keydown', function(ev){ if (ev.key==='Enter') lookupCode(codeInput.value.trim()); });
   E('saveNameBtn').addEventListener('click', function(){ setOperatorName(E('opNameInput').value.trim()); toast('Name saved'); });
 
   if (isAdmin()){
@@ -2625,6 +2646,10 @@ function openTagFor(pipeCode, returnTo){
  * The chip for the current reel is not a button. There is nothing to navigate to, and a
  * pressable-looking element that does nothing invites a second press. */
 function reelSwitcherHtml(pipe){
+  /* Controller only. An operator reaches a reel by scanning its tag and no other way, so
+   * the reel they are logging to is always the reel physically in front of them. Showing
+   * the siblings — even greyed — would only invite asking someone to tap one. */
+  if (!isAdmin()) return '';
   var sibs = (STATE.siblingPipes || []).filter(function(p){ return p && p.PipeCode; });
   if (sibs.length < 2) return '';   // nothing to switch between
 
@@ -3804,10 +3829,16 @@ function workOrderGroupHtml(g){
     var lrHtml = lr ? (esc(lr.Value)+'" '+esc(lr.Type)+' <span class="muted">'+fmtRel(lr.Timestamp)+'</span> ' +
       (lr.InTol==='Y' ? '<span class="dot good"></span>' : lr.InTol==='N' ? '<span class="dot bad"></span>' : '')) : '<span class="muted">none</span>';
     var stale = lr && (Date.now()-new Date(lr.Timestamp).getTime()) > 75*60000 && p.overallStatus!=='Complete';
-    return '<tr class="pipeRow" data-pipe="'+esc(p.pipeCode)+'" style="cursor:pointer">' +
+    return '<tr class="pipeRow" data-pipe="'+esc(p.pipeCode)+'" data-wo="'+esc(g.workOrderCode)+'" draggable="true" style="cursor:pointer">' +
+      '<td class="l dragcell" title="Drag to reorder, or onto another work order to move this reel">&#8942;&#8942;</td>' +
       '<td class="l">'+esc(p.pipeCode)+' '+problemBadge(p.openProblems)+'</td>' +
       '<td>'+pillHtml(p.blStatus)+'</td><td>'+pillHtml(p.brStatus)+'</td><td>'+pillHtml(p.cvStatus)+'</td>' +
       '<td class="l">'+lrHtml+(stale?' <span class="flag">STALE</span>':'')+'</td>' +
+      '<td class="l nodrill">' +
+        '<button class="btn sm" data-moveup="'+esc(p.pipeCode)+'" title="Move up">&uarr;</button> ' +
+        '<button class="btn sm" data-movedown="'+esc(p.pipeCode)+'" title="Move down">&darr;</button> ' +
+        '<button class="btn sm danger" data-removereel="'+esc(p.pipeCode)+'" data-archived="'+(p.archived?'1':'')+'" title="Archive or delete this reel">Remove</button>' +
+      '</td>' +
     '</tr>';
   }).join('');
   return '<section class="card">' +
@@ -3816,7 +3847,10 @@ function workOrderGroupHtml(g){
     problemBadge(g.openProblems) +
     '<span class="muted">'+esc(g.customer||'')+(g.productCode?' &middot; '+esc(g.productCode):'')+'</span></div>' +
     lengthProgressHtml(g) +
-    '<table style="margin-top:6px"><thead><tr><th class="l">Reel</th><th>Baseline</th><th>Braidline</th><th>Coverline</th><th class="l">Last reading</th></tr></thead><tbody>' + pipeRows + '</tbody></table>' +
+    '<table style="margin-top:6px" class="pipeTable" data-wotable="'+esc(g.workOrderCode)+'">' +
+      '<thead><tr><th class="l" style="width:18px">&nbsp;</th><th class="l">Reel</th><th>Baseline</th><th>Braidline</th>' +
+      '<th>Coverline</th><th class="l">Last reading</th><th class="l" style="width:150px">&nbsp;</th></tr></thead>' +
+      '<tbody data-wobody="'+esc(g.workOrderCode)+'">' + pipeRows + '</tbody></table>' +
     '<div class="row" style="margin-top:8px"><button class="btn sm" data-addpipe="'+esc(g.workOrderCode)+'">+ Add reel to this work order</button>' +
       '<span class="spacer"></span>' +
       '<button class="btn sm" data-renamewo="'+esc(g.workOrderCode)+'" data-reels="'+g.pipes.length+'">Rename</button>' +
@@ -3833,6 +3867,131 @@ function archiveWorkOrder(code, activePipes, onDone){
   apiPost('archiveWorkOrder', {code: code})
     .then(function(){ toast(code + ' archived'); if (onDone) onDone(); })
     .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
+}
+
+/* ===================== ARRANGING REELS ON THE DASHBOARD =====================
+ *
+ * Reels were listed newest-activity-first, which is useless for organising a job: the
+ * order jumps around as readings come in. Dragging sets an explicit order that holds
+ * still, and dragging a reel onto another work order's card moves it there — a reel
+ * logged against the wrong job otherwise had to be deleted and retyped.
+ *
+ * The up/down buttons are not decoration. HTML5 drag-and-drop does not fire on touch, so
+ * on a tablet the drag handle would do nothing at all; the arrows are the same operation
+ * by another route and work everywhere.
+ *
+ * Each save sends the work order's complete final list rather than one move. That is what
+ * the screen knows after a drop, and it makes the call idempotent: a retry after a dropped
+ * connection lands the same way instead of shuffling the list again.
+ */
+var DRAG_REEL = null;
+
+function bindReelOrdering(root){
+  qsa('tr.pipeRow', root).forEach(function(tr){
+    tr.addEventListener('dragstart', function(ev){
+      DRAG_REEL = {code: tr.dataset.pipe, from: tr.dataset.wo};
+      tr.classList.add('dragging');
+      try { ev.dataTransfer.effectAllowed = 'move'; ev.dataTransfer.setData('text/plain', tr.dataset.pipe); } catch (e) {}
+    });
+    tr.addEventListener('dragend', function(){
+      tr.classList.remove('dragging');
+      qsa('.dropinto', root).forEach(function(x){ x.classList.remove('dropinto'); });
+      DRAG_REEL = null;
+    });
+    tr.addEventListener('dragover', function(ev){
+      if (!DRAG_REEL || DRAG_REEL.code === tr.dataset.pipe) return;
+      ev.preventDefault();
+      // Drop above or below depending on which half of the row the cursor is over, so a
+      // reel can be placed last without a separate target.
+      var box = tr.getBoundingClientRect();
+      tr.dataset.dropAfter = (ev.clientY - box.top) > box.height / 2 ? '1' : '';
+      tr.classList.add('dropinto');
+    });
+    tr.addEventListener('dragleave', function(){ tr.classList.remove('dropinto'); });
+    tr.addEventListener('drop', function(ev){
+      ev.preventDefault(); ev.stopPropagation();
+      if (!DRAG_REEL) return;
+      var after = !!tr.dataset.dropAfter;
+      tr.classList.remove('dropinto');
+      dropReel(DRAG_REEL, tr.dataset.wo, tr.dataset.pipe, after);
+    });
+  });
+
+  // Dropping on empty space in a work order's list appends to it — the only way to move a
+  // reel into a work order that currently has none.
+  qsa('[data-wobody]', root).forEach(function(tb){
+    tb.addEventListener('dragover', function(ev){ if (DRAG_REEL) ev.preventDefault(); });
+    tb.addEventListener('drop', function(ev){
+      if (!DRAG_REEL) return;
+      ev.preventDefault();
+      dropReel(DRAG_REEL, tb.dataset.wobody, null, true);
+    });
+  });
+
+  qsa('[data-moveup]', root).forEach(function(b){
+    b.addEventListener('click', function(ev){ ev.stopPropagation(); nudgeReel(b.dataset.moveup, -1); });
+  });
+  qsa('[data-movedown]', root).forEach(function(b){
+    b.addEventListener('click', function(ev){ ev.stopPropagation(); nudgeReel(b.dataset.movedown, 1); });
+  });
+}
+
+function reelListOf(woCode){
+  var tb = document.querySelector('[data-wobody="'+CSS.escape(woCode)+'"]');
+  return tb ? qsa('tr.pipeRow', tb).map(function(r){ return r.dataset.pipe; }) : [];
+}
+
+function dropReel(drag, targetWo, beforeCode, after){
+  var list = reelListOf(targetWo).filter(function(c){ return c !== drag.code; });
+  var at = beforeCode ? list.indexOf(beforeCode) : list.length;
+  if (at < 0) at = list.length; else if (after) at += 1;
+  list.splice(at, 0, drag.code);
+
+  var crossing = drag.from !== targetWo;
+  if (crossing && !confirm(
+      'Move reel ' + drag.code + ' from ' + drag.from + ' to ' + targetWo + '?\n\n' +
+      'It keeps all of its readings, but it will be measured against ' + targetWo +
+      '’s reference targets from now on.')) return;
+
+  saveReelOrder(targetWo, list, crossing ? ('Moved ' + drag.code + ' to ' + targetWo) : null);
+}
+
+function nudgeReel(code, delta){
+  var tr = document.querySelector('tr.pipeRow[data-pipe="'+CSS.escape(code)+'"]');
+  if (!tr) return;
+  var wo = tr.dataset.wo;
+  var list = reelListOf(wo);
+  var i = list.indexOf(code), j = i + delta;
+  if (i < 0 || j < 0 || j >= list.length) return;     // already at the end
+  list.splice(j, 0, list.splice(i, 1)[0]);
+  saveReelOrder(wo, list, null);
+}
+
+function saveReelOrder(woCode, list, message){
+  apiPost('setPipeOrder', {workOrderCode: woCode, pipeCodes: list})
+    .then(function(){ if (message) toast(message); loadDashboard(); })
+    .catch(function(err){
+      if (!err.sessionExpired) toast(err.message, true);
+      loadDashboard();   // put the rows back where the server says they are
+    });
+}
+
+/* Remove a reel from the dashboard.
+ *
+ * Archive and delete are the same button because they are one decision with two outcomes,
+ * and the database requires the first before the second anyway. Offering "Delete" on a
+ * live reel would only ever produce an error telling you to archive it first. */
+function removeReelFlow(pipeCode, isArchived, onDone){
+  if (!isArchived){
+    if (!confirm('Archive reel ' + pipeCode + '?\n\n' +
+        'It comes off the dashboard and the TV board but keeps all its data, and you can ' +
+        'restore or permanently delete it from the Reports page.')) return;
+    apiPost('archivePipe', {pipeCode: pipeCode})
+      .then(function(){ toast(pipeCode + ' archived'); if (onDone) onDone(); })
+      .catch(function(err){ if (!err.sessionExpired) toast(err.message, true); });
+    return;
+  }
+  deleteReelFlow(pipeCode, onDone);   // already archived: straight to the typed confirmation
 }
 
 /* Rename a work order.
@@ -3890,7 +4049,11 @@ function renderDashboard(d){
     '</section>';
 
   qsa('.pipeRow', root).forEach(function(tr){
-    tr.addEventListener('click', function(){ go('pipeDetail', {pipeCode: tr.dataset.pipe}); });
+    tr.addEventListener('click', function(ev){
+      // The whole row opens the reel, so the controls living in it must not also drill in.
+      if (ev.target.closest('.nodrill')) return;
+      go('pipeDetail', {pipeCode: tr.dataset.pipe});
+    });
   });
   qsa('[data-addpipe]', root).forEach(function(b){
     b.addEventListener('click', function(){ go('addPipe', {workOrderCode: b.dataset.addpipe}); });
@@ -3905,6 +4068,13 @@ function renderDashboard(d){
     b.addEventListener('click', function(ev){
       ev.stopPropagation();
       renameWorkOrder(b.dataset.renamewo, Number(b.dataset.reels||0), loadDashboard);
+    });
+  });
+  bindReelOrdering(root);
+  qsa('[data-removereel]', root).forEach(function(b){
+    b.addEventListener('click', function(ev){
+      ev.stopPropagation();
+      removeReelFlow(b.dataset.removereel, !!b.dataset.archived, loadDashboard);
     });
   });
   qsa('[data-wodash]', root).forEach(function(h){
@@ -4777,7 +4947,7 @@ function addReelToWorkOrder(code){
 
 /* Delete is two steps on purpose: the database refuses to delete a reel that hasn't been
  * archived, so the screen offers to do that first rather than reporting a dead end. */
-function deleteReelFlow(pipeCode){
+function deleteReelFlow(pipeCode, onDone){
   apiGet('pipeDeletePreview', {pipeCode: pipeCode}).then(function(p){
     var counts = [
       p.readings + ' reading' + (p.readings === 1 ? '' : 's'),
@@ -4801,7 +4971,7 @@ function deleteReelFlow(pipeCode){
       .then(function(res){
         toast('Deleted ' + pipeCode + ' and ' + res.deleted.readings + ' reading' +
               (res.deleted.readings === 1 ? '' : 's'));
-        loadReportIndex();
+        (onDone || loadReportIndex)();
       })
       .catch(function(err){ toast(err.message, true); });
   }).catch(function(err){ toast(err.message, true); });
